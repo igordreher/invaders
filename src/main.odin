@@ -17,7 +17,78 @@ main :: proc() {
 	for regs.PC < auto_cast len(data) {
 		instruction := decode_8080_instruction(data)
 		print_8080_instruction(instruction)
+		exec_8080_instruction(instruction)
 		regs.PC += instruction.size
+	}
+}
+
+exec_8080_instruction :: proc(using instruction: Instruction) {
+	addr := transmute(u16)[2]byte{regs.r[.H], regs.r[.L]}
+	#partial switch mnemonic {
+		case .NOP: // do nothing
+		
+		// Data Transfer:
+		case .MOV:
+		{
+			if source == .NULL && dest == .NULL {
+				fmt.panicf("Cannot MOV memory to memory\n")
+			}
+			target := dest == .NULL ? &memory[addr] : &regs.r[dest]
+			value := source == .NULL ? memory[addr] : regs.r[source]
+			target^ = value
+		}
+		case .MVI:
+		{
+			target := dest == .NULL ? &memory[addr] : &regs.r[dest]
+			target^ = bytes[0]
+		}
+		case .LXI:
+		{
+			target := dest == .NULL ? cast([^]byte)(&regs.SP) : cast([^]byte)&regs.r[dest]
+			target[0] = bytes[1]
+			target[1] = bytes[0]
+		}
+		case .LDA:
+		{
+			addr := transmute(u16)([2]byte{bytes[1], bytes[0]})
+			regs.A = memory[addr]
+		}
+		case .STA:
+		{
+			addr := transmute(u16)([2]byte{bytes[1], bytes[0]})
+			memory[addr] = regs.A
+		}
+		case .LHLD:
+		{
+			addr := transmute(u16)([2]byte{bytes[1], bytes[0]})
+			regs.L = memory[addr]
+			regs.H = memory[addr+1]
+		}
+		case .SHLD:
+		{
+			addr := transmute(u16)([2]byte{bytes[1], bytes[0]})
+			memory[addr] = regs.L
+			memory[addr+1] = regs.H
+		}
+		case .LDAX:
+		{
+			addr := transmute(u16)([2]byte{regs.r[dest], regs.r[Register(u8(dest)+1)]})
+			regs.A = memory[addr]
+		}
+		case .STAX:
+		{
+			addr := transmute(u16)([2]byte{regs.r[dest], regs.r[Register(u8(dest)+1)]})
+			memory[addr] = regs.A
+		}
+		case .XCHG:
+		{
+			hl := (^[2]byte)(&regs.H)
+			de := (^[2]byte)(&regs.D)
+			p := hl^
+			hl^ = de^
+			de^ = p
+		}
+		case: fmt.panicf("instruction not implemented: %s", mnemonic)
 	}
 }
 
@@ -25,7 +96,7 @@ decode_8080_instruction :: proc(buffer: []byte) -> Instruction {
 	opcode := buffer[regs.PC]
 
 	bytes: [2]byte
-	if regs.PC < auto_cast (len(buffer)-1) {
+	if regs.PC < auto_cast (len(buffer)-1) { // TODO: fix buffer overflow
 		bytes = (cast(^[2]byte)&buffer[regs.PC+1])^
 	}
 	dest := cast(Register)(opcode & 0b00_111_000 >> 3)
@@ -305,11 +376,13 @@ Register :: enum {
 	NULL = 0b110, // NOTE: this is not a register
 }
 
-regs : struct {
-	A: [2]byte,
-	B, C, D, E, H, L: byte,
-	SP: u16,
-	PC: u16,
+regs: struct {
+	using _: struct #raw_union {
+		using _: struct {A, B, C, D, E, H, L, NULL: byte},
+		r: [Register]byte,
+	},
+	// r: [Register]byte,
+	PC, SP: u16,
 }
 
 Flag :: enum {
