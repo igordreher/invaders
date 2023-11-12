@@ -44,7 +44,7 @@ exec_8080_instruction :: proc(using instruction: Instruction) {
 		}
 		case .LXI:
 		{
-			target := dest == .NULL ? cast([^]byte)(&regs.SP) : cast([^]byte)&regs.r[dest]
+			target := dest == .NULL ? cast(^[2]byte)(&regs.SP) : cast(^[2]byte)&regs.r[dest]
 			target[0] = bytes[1]
 			target[1] = bytes[0]
 		}
@@ -88,6 +88,91 @@ exec_8080_instruction :: proc(using instruction: Instruction) {
 			hl^ = de^
 			de^ = p
 		}
+		// Arithmetic Group
+		case .ADD:
+		{
+			value := source == .NULL ? memory[addr] : regs.r[source]
+			regs.A += value
+			set_flags(regs.A)
+			set_flag(.CY, regs.A < value)
+		}
+		case .ADI:
+		{
+			regs.A += bytes[0]
+			set_flags(regs.A)
+			set_flag(.CY, regs.A < bytes[0])
+		}
+		case .ADC:
+		{
+			value := source == .NULL ? memory[addr] : regs.r[source]
+			regs.A += value + u8(.CY in flags)
+			set_flags(regs.A)
+			set_flag(.CY, regs.A < value)
+		}
+		case .ACI:
+		{
+			regs.A += bytes[0] + u8(.CY in flags)
+			set_flags(regs.A)
+			set_flag(.CY, regs.A < bytes[0])
+		}
+		case .SUB:
+		{
+			value := source == .NULL ? memory[addr] : regs.r[source]
+			regs.A -= value
+			set_flags(regs.A)
+			set_flag(.CY, regs.A > value)
+		}
+		case .SUI:
+		{
+			regs.A -= bytes[0]
+			set_flags(regs.A)
+			set_flag(.CY, regs.A > bytes[0])
+		}
+		case .SBB:
+		{
+			value := source == .NULL ? memory[addr] : regs.r[source]
+			regs.A -= value - u8(.CY in flags)
+			set_flags(regs.A)
+			set_flag(.CY, regs.A > value)
+		}
+		case .SBI:
+		{
+			regs.A -= bytes[0] - u8(.CY in flags)
+			set_flags(regs.A)
+			set_flag(.CY, regs.A > bytes[0])
+		}
+		case .INR, .DCR:
+		{
+			target := dest == .NULL ? &memory[addr] : &regs.r[dest]
+			target^ = mnemonic == .INR ? target^ + 1 : target^ - 1
+			set_flags(target^)
+		}
+		case .INX, .DCX:
+		{
+			target := dest == .NULL ? &regs.PC : (^u16)(&regs.r[dest])
+			target^ = mnemonic == .INX ? target^ + 1 : target^ - 1
+		}
+		case .DAD:
+		{
+			value := dest == .NULL ? regs.PC : (^u16)(&regs.r[dest])^
+			hl := (^u16)(&regs.H) 
+			hl^ += value
+			set_flag(.CY, hl^ < value)
+		}
+		case .DAA:
+		{
+			v := u8(0)
+			if regs.A & 0x0f > 9 || .CY in flags {
+				v += 6
+			}
+			if regs.A >> 4 > 9 || .CY in flags {
+				v += 6 << 4
+			}
+			regs.A += v
+			set_flags(regs.A)
+			set_flag(.CY, regs.A < v)
+		}
+		
 		case: fmt.panicf("instruction not implemented: %s", mnemonic)
 	}
 }
@@ -270,6 +355,21 @@ decode_8080_instruction :: proc(buffer: []byte) -> Instruction {
 	fmt.panicf("instruction not implemented: 0x%02x\n", opcode)	
 }
 
+set_flags :: proc(v: u8) {
+	set_flag(.Z, v == 0)
+	set_flag(.S, v >> 7 == 1)
+	set_flag(.P, v & 1 == 0)
+	// set_flag(.CY, cy)
+}
+
+set_flag :: proc(flag: Flag, v: bool) {
+	if v {
+		flags += {flag}
+	} else {
+		flags -= {flag}
+	}
+}
+
 print_8080_instruction :: proc(using instruction: Instruction) {
 	// TODO: improve this
 	fmt.printf("%04x %s\n", regs.PC, mnemonic)
@@ -381,7 +481,6 @@ regs: struct {
 		using _: struct {A, B, C, D, E, H, L, NULL: byte},
 		r: [Register]byte,
 	},
-	// r: [Register]byte,
 	PC, SP: u16,
 }
 
@@ -390,7 +489,7 @@ Flag :: enum {
 	S, 
 	P, 
 	CY, 
-	AC,
+	// AC, // NOTE: this flag is not used in space invaders
 }
 
 flags: bit_set[Flag]
