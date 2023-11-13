@@ -172,6 +172,75 @@ exec_8080_instruction :: proc(using instruction: Instruction) {
 			set_flags(regs.A)
 			set_flag(.CY, regs.A < v)
 		}
+		// Logical group
+		case .ANA, .ANI:
+		{
+			value := source == .NULL ? memory[addr] : regs.r[source]
+			if mnemonic == .ANI do value = bytes[0]
+			regs.A = regs.A & value
+			set_flags(regs.A)
+			set_flag(.CY, false)
+		}
+		case .XRA, .XRI:
+		{
+			value := source == .NULL ? memory[addr] : regs.r[source]
+			if mnemonic == .XRI do value = bytes[0]
+			regs.A = regs.A ~ value
+			set_flags(regs.A)
+			set_flag(.CY, false)
+		}
+		case .ORA, .ORI:
+		{
+			value := source == .NULL ? memory[addr] : regs.r[source]
+			if mnemonic == .ORI do value = bytes[0]
+			regs.A = regs.A | value
+			set_flags(regs.A)
+			set_flag(.CY, false)
+		}
+		case .CMP, .CPI:
+		{
+			value := source == .NULL ? memory[addr] : regs.r[source]
+			if mnemonic == .CPI do value = bytes[0]
+			result := regs.A - value
+			set_flags(result)
+			set_flag(.CY, regs.A < value)
+		}
+		case .RLC:
+		{
+			cy := regs.A >> 7
+			regs.A = regs.A << 1 | cy
+			set_flag(.CY, cy == 1)
+		}
+		case .RRC:
+		{
+			cy := regs.A & 1
+			regs.A = regs.A >> 1 & (cy << 7)
+			set_flag(.CY, cy == 1)
+		}
+		case .RAL:
+		{
+			cy := regs.A >> 7 == 1
+			regs.A = regs.A << 1 & u8(.CY in flags)
+			set_flag(.CY, cy)
+		}
+		case .RAR:
+		{
+			cy := regs.A & 1 == 1
+			regs.A = regs.A >> 1 & (u8(.CY in flags) << 7)
+			set_flag(.CY, cy)
+		}
+		case .CMA:
+		{
+			regs.A ~= 0xff
+		}
+		case .CMC:
+		{
+			set_flag(.CY, !(.CY in flags))
+		}
+		case .STC:
+		{
+			set_flag(.CY, true)
+		}
 		
 		case: fmt.panicf("instruction not implemented: %s", mnemonic)
 	}
