@@ -241,6 +241,43 @@ exec_8080_instruction :: proc(using instruction: Instruction) {
 		{
 			set_flag(.CY, true)
 		}
+		// Branch group
+		case .JMP:
+		{
+			regs.PC = transmute(u16)([2]byte{bytes[1], bytes[0]})
+		}
+		case .JZ, .JNZ, .JC, .JNC, .JPE, .JPO, .JP, .JM:
+		{
+			if (Flag(u8(condition) & 0b110) in flags) == bool(u8(condition) & 0b001) {
+				regs.PC = transmute(u16)([2]byte{bytes[1], bytes[0]})
+			}
+		}
+		case .CALL:
+		{
+			// memory[regs.SP-1] = u8(regs.PC>>8)
+			// memory[regs.SP-2] = u8(regs.PC)
+			(^u16)(&memory[regs.SP-2])^ = regs.PC 
+			regs.SP -= 2
+			regs.PC = transmute(u16)([2]byte{bytes[1], bytes[0]})
+		}
+		case .CZ, .CNZ, .CC, .CNC, .CPE, .CPO, .CP, .CM:
+		{
+			if (Flag(u8(condition) & 0b110) in flags) == bool(u8(condition) & 0b001) {
+				(^u16)(&memory[regs.SP-2])^ = regs.PC 
+				regs.SP -= 2
+				regs.PC = transmute(u16)([2]byte{bytes[1], bytes[0]})
+			}
+		}
+		case .RET:
+		{
+			regs.PC = transmute(u16)([2]byte{memory[regs.SP+1], memory[regs.SP]})
+		}
+		case .RZ, .RNZ, .RC, .RNC, .RPE, .RPO, .RP, .RM:
+		{
+			if (Flag(u8(condition) & 0b110) in flags) == bool(u8(condition) & 0b001) {
+				regs.PC = transmute(u16)([2]byte{memory[regs.SP+1], memory[regs.SP]})
+			}
+		}
 		
 		case: fmt.panicf("instruction not implemented: %s", mnemonic)
 	}
@@ -259,146 +296,133 @@ decode_8080_instruction :: proc(buffer: []byte) -> Instruction {
 	bdhsp := bit_set[Register]{.B, .D, .H, .NULL}
 	
 	if opcode == 0x0 {
-		return Instruction{.NOP, dest, source, 1, bytes}
+		return Instruction{.NOP, {dest=dest}, source, 1, bytes}
 	}
 
 	if opdigits == 0b01 { // MOV & HLT
 		if dest == .NULL && source == .NULL {
-			return Instruction{.HLT, dest, source, 1, bytes}
+			return Instruction{.HLT, {dest=dest}, source, 1, bytes}
 		}
-		return Instruction{.MOV, dest, source, 1, bytes}
+		return Instruction{.MOV, {dest=dest}, source, 1, bytes}
 	}
 	
 	if opdigits == 0b00 && source == .NULL {
-		return Instruction{.MVI, dest, source, 2, bytes}
+		return Instruction{.MVI, {dest=dest}, source, 2, bytes}
 	}
 	
 	if opdigits == 0b00 { // INR & DCR
 		if source == auto_cast 0b100 {
-			return Instruction{.INR, dest, source, 1, bytes}
+			return Instruction{.INR, {dest=dest}, source, 1, bytes}
 		} else if source == auto_cast 0b101 {
-			return Instruction{.DCR, dest, source, 1, bytes}
+			return Instruction{.DCR, {dest=dest}, source, 1, bytes}
 		}
 	}
 
 	if opdigits == 0b10 { // ADD & ADC
 		if dest == auto_cast 0b000 {
-			return Instruction{.ADD, dest, source, 1, bytes}
+			return Instruction{.ADD, {dest=dest}, source, 1, bytes}
 		} else if dest == auto_cast 0b001 {
-			return Instruction{.ADC, dest, source, 1, bytes}
+			return Instruction{.ADC, {dest=dest}, source, 1, bytes}
 		}
 	}
 
 	if opdigits == 0b10 && dest == auto_cast 0b010 {
-		return Instruction{.SUB, dest, source, 1, bytes}
+		return Instruction{.SUB, {dest=dest}, source, 1, bytes}
 	}
 	
 	if opdigits == 0b10 && dest == auto_cast 0b011 {
-		return Instruction{.SBB, dest, source, 1, bytes}
+		return Instruction{.SBB, {dest=dest}, source, 1, bytes}
 	}
 	
 	if opdigits == 0b10 && dest == auto_cast 0b100 {
-		return Instruction{.ANA, dest, source, 1, bytes}
+		return Instruction{.ANA, {dest=dest}, source, 1, bytes}
 	}
 
 	if opdigits == 0b10 && dest == auto_cast 0b101 {
-		return Instruction{.XRA, dest, source, 1, bytes}
+		return Instruction{.XRA, {dest=dest}, source, 1, bytes}
 	}
 	
 	if opdigits == 0b10 && dest == auto_cast 0b110 {
-		return Instruction{.ORA, dest, source, 1, bytes}
+		return Instruction{.ORA, {dest=dest}, source, 1, bytes}
 	}
 	
 	if opdigits == 0b10 && dest == auto_cast 0b111 {
-		return Instruction{.CMP, dest, source, 1, bytes}
+		return Instruction{.CMP, {dest=dest}, source, 1, bytes}
+	}
+
+	if opdigits == 0b11 && source == auto_cast 0b010 { // Jcondition
+		mnemonic := Mnemonic(u8(Mnemonic.JMP)+1 + u8(dest))
+		return Instruction{mnemonic, {condition=Condition(dest)}, source, 3, bytes}
+	}
+	if opdigits == 0b11 && source == auto_cast 0b000 { // Rcondition
+		mnemonic := Mnemonic(u8(Mnemonic.RET)+1 + u8(dest))
+		return Instruction{mnemonic, {condition=Condition(dest)}, source, 3, bytes}
+	}
+	if opdigits == 0b11 && source == auto_cast 0b100 { // Ccondition
+		mnemonic := Mnemonic(u8(Mnemonic.CALL)+1 + u8(dest))
+		return Instruction{mnemonic, {condition=Condition(dest)}, source, 3, bytes}
 	}
 
 	switch opcode {
-		case 0xc6: return Instruction{.ADI, dest, source, 2, bytes}
-		case 0xce: return Instruction{.ACI, dest, source, 2, bytes}
-		case 0xd6: return Instruction{.SUI, dest, source, 2, bytes}
-		case 0xde: return Instruction{.SBI, dest, source, 2, bytes}
-		case 0xe6: return Instruction{.ANI, dest, source, 2, bytes}
-		case 0xee: return Instruction{.XRI, dest, source, 2, bytes}
-		case 0xf6: return Instruction{.ORI, dest, source, 2, bytes}
-		case 0xfe: return Instruction{.CPI, dest, source, 2, bytes}
-		case 0x07: return Instruction{.RLC, dest, source, 1, bytes}
-		case 0x0f: return Instruction{.RRC, dest, source, 1, bytes}
-		case 0x17: return Instruction{.RAL, dest, source, 1, bytes}
-		case 0x1f: return Instruction{.RAR, dest, source, 1, bytes}
+		case 0xc6: return Instruction{.ADI, {dest=dest}, source, 2, bytes}
+		case 0xce: return Instruction{.ACI, {dest=dest}, source, 2, bytes}
+		case 0xd6: return Instruction{.SUI, {dest=dest}, source, 2, bytes}
+		case 0xde: return Instruction{.SBI, {dest=dest}, source, 2, bytes}
+		case 0xe6: return Instruction{.ANI, {dest=dest}, source, 2, bytes}
+		case 0xee: return Instruction{.XRI, {dest=dest}, source, 2, bytes}
+		case 0xf6: return Instruction{.ORI, {dest=dest}, source, 2, bytes}
+		case 0xfe: return Instruction{.CPI, {dest=dest}, source, 2, bytes}
+		case 0x07: return Instruction{.RLC, {dest=dest}, source, 1, bytes}
+		case 0x0f: return Instruction{.RRC, {dest=dest}, source, 1, bytes}
+		case 0x17: return Instruction{.RAL, {dest=dest}, source, 1, bytes}
+		case 0x1f: return Instruction{.RAR, {dest=dest}, source, 1, bytes}
 		
-		case 0xc3: return Instruction{.JMP, dest, source, 3, bytes}
-		case 0xda: return Instruction{.JC, dest, source, 3, bytes}
-		case 0xd2: return Instruction{.JNC, dest, source, 3, bytes}
-		case 0xca: return Instruction{.JZ, dest, source, 3, bytes}
-		case 0xc2: return Instruction{.JNZ, dest, source, 3, bytes}
-		case 0xfa: return Instruction{.JM, dest, source, 3, bytes}
-		case 0xf2: return Instruction{.JP, dest, source, 3, bytes}
-		case 0xea: return Instruction{.JPE, dest, source, 3, bytes}
-		case 0xe2: return Instruction{.JPO, dest, source, 3, bytes}
+		case 0xc3: return Instruction{.JMP, {dest=dest}, source, 3, bytes}
+		case 0xcd: return Instruction{.CALL, {dest=dest}, source, 3, bytes}
+		case 0xc9: return Instruction{.RET, {dest=dest}, source, 1, bytes}
 		
-		case 0xcd: return Instruction{.CALL, dest, source, 3, bytes}
-		case 0xdc: return Instruction{.CC, dest, source, 3, bytes}
-		case 0xd4: return Instruction{.CNC, dest, source, 3, bytes}
-		case 0xcc: return Instruction{.CZ, dest, source, 3, bytes}
-		case 0xc4: return Instruction{.CNZ, dest, source, 3, bytes}
-		case 0xfc: return Instruction{.CM, dest, source, 3, bytes}
-		case 0xf4: return Instruction{.CP, dest, source, 3, bytes}
-		case 0xec: return Instruction{.CPE, dest, source, 3, bytes}
-		case 0xe4: return Instruction{.CPO, dest, source, 3, bytes}
-
-		case 0xc9: return Instruction{.RET, dest, source, 1, bytes}
-		case 0xd8: return Instruction{.RC, dest, source, 1, bytes}
-		case 0xd0: return Instruction{.RNC, dest, source, 1, bytes}
-		case 0xc8: return Instruction{.RZ, dest, source, 1, bytes}
-		case 0xc0: return Instruction{.RNZ, dest, source, 1, bytes}
-		case 0xf8: return Instruction{.RM, dest, source, 1, bytes}
-		case 0xf0: return Instruction{.RP, dest, source, 1, bytes}
-		case 0xe8: return Instruction{.RPE, dest, source, 1, bytes}
-		case 0xe0: return Instruction{.RPO, dest, source, 1, bytes}
+		case 0xdb: return Instruction{.IN, {dest=dest}, source, 2, bytes}
+		case 0xd3: return Instruction{.OUT, {dest=dest}, source, 2, bytes}
 		
-		case 0xdb: return Instruction{.IN, dest, source, 2, bytes}
-		case 0xd3: return Instruction{.OUT, dest, source, 2, bytes}
+		case 0x32: return Instruction{.STA, {dest=dest}, source, 3, bytes}
+		case 0x3a: return Instruction{.LDA, {dest=dest}, source, 3, bytes}
 		
-		case 0x32: return Instruction{.STA, dest, source, 3, bytes}
-		case 0x3a: return Instruction{.LDA, dest, source, 3, bytes}
+		case 0xeb: return Instruction{.XCHG, {dest=dest}, source, 1, bytes}
+		case 0xe3: return Instruction{.XTHL, {dest=dest}, source, 1, bytes}
+		case 0xf9: return Instruction{.SPHL, {dest=dest}, source, 1, bytes}
+		case 0xe9: return Instruction{.PCHL, {dest=dest}, source, 1, bytes}
 		
-		case 0xeb: return Instruction{.XCHG, dest, source, 1, bytes}
-		case 0xe3: return Instruction{.XTHL, dest, source, 1, bytes}
-		case 0xf9: return Instruction{.SPHL, dest, source, 1, bytes}
-		case 0xe9: return Instruction{.PCHL, dest, source, 1, bytes}
+		case 0x02: return Instruction{.STAX, {dest=.B}, source, 1, bytes}
+		case 0x12: return Instruction{.STAX, {dest=.D}, source, 1, bytes}
+		case 0x0a: return Instruction{.LDAX, {dest=.B}, source, 1, bytes}
+		case 0x1a: return Instruction{.LDAX, {dest=.D}, source, 1, bytes}
 		
-		case 0x02: return Instruction{.STAX, .B, source, 1, bytes}
-		case 0x12: return Instruction{.STAX, .D, source, 1, bytes}
-		case 0x0a: return Instruction{.LDAX, .B, source, 1, bytes}
-		case 0x1a: return Instruction{.LDAX, .D, source, 1, bytes}
-		
-		case 0x2f: return Instruction{.CMA, dest, source, 1, bytes}
-		case 0x37: return Instruction{.STC, dest, source, 1, bytes}
-		case 0x3f: return Instruction{.CMC, dest, source, 1, bytes}
-		case 0x27: return Instruction{.DAA, dest, source, 1, bytes}
-		case 0x22: return Instruction{.SHLD, dest, source, 3, bytes}
-		case 0x2a: return Instruction{.LHLD, dest, source, 3, bytes}
-		case 0xfb: return Instruction{.EI, dest, source, 1, bytes}
-		case 0xf3: return Instruction{.DI, dest, source, 1, bytes}
+		case 0x2f: return Instruction{.CMA, {dest=dest}, source, 1, bytes}
+		case 0x37: return Instruction{.STC, {dest=dest}, source, 1, bytes}
+		case 0x3f: return Instruction{.CMC, {dest=dest}, source, 1, bytes}
+		case 0x27: return Instruction{.DAA, {dest=dest}, source, 1, bytes}
+		case 0x22: return Instruction{.SHLD, {dest=dest}, source, 3, bytes}
+		case 0x2a: return Instruction{.LHLD, {dest=dest}, source, 3, bytes}
+		case 0xfb: return Instruction{.EI, {dest=dest}, source, 1, bytes}
+		case 0xf3: return Instruction{.DI, {dest=dest}, source, 1, bytes}
 	}
 
 	if opdigits == 0b11 && source == auto_cast 0b111 {
-		return Instruction{.RST, dest, source, 1, bytes}
+		return Instruction{.RST, {dest=dest}, source, 1, bytes}
 	}
 
 	if opdigits == 0b00 {
 		if Register(int(dest)-1) in bdhsp {
 			if source == auto_cast 0b001 {
-				return Instruction{.DAD, Register(int(dest)-1), source, 1, bytes}
+				return Instruction{.DAD, {dest=Register(int(dest)-1)}, source, 1, bytes}
 			}
 			if source == auto_cast 0b011 {
-				return Instruction{.DCX, Register(int(dest)-1), source, 1, bytes}
+				return Instruction{.DCX, {dest=Register(int(dest)-1)}, source, 1, bytes}
 			}
 		}
 		if dest in bdhsp {
 			if source == auto_cast 0b011 {
-				return Instruction{.INX, dest, source, 1, bytes}
+				return Instruction{.INX, {dest=dest}, source, 1, bytes}
 			}
 		}
 	}
@@ -407,17 +431,17 @@ decode_8080_instruction :: proc(buffer: []byte) -> Instruction {
 	if opdigits == 0b11 { // PUSH & POP
 		if dest in bdhsp {
 			if source == auto_cast 0b101 {
-				return Instruction{.PUSH, dest, source, 1, bytes}
+				return Instruction{.PUSH, {dest=dest}, source, 1, bytes}
 			}
 			if source == auto_cast 0b001 {
-				return Instruction{.POP, dest, source, 1, bytes}
+				return Instruction{.POP, {dest=dest}, source, 1, bytes}
 			}
 		}
 	}
 
 	if opdigits == 0b00 && source == auto_cast 0b001 {
 		if dest in bdhsp {
-			return Instruction{.LXI, dest, source, 3, bytes}
+			return Instruction{.LXI, {dest=dest}, source, 3, bytes}
 		}
 	}
 	
@@ -444,7 +468,7 @@ print_8080_instruction :: proc(using instruction: Instruction) {
 	fmt.printf("%04x %s\n", regs.PC, mnemonic)
 }
 
-Instruction_Mnemonic :: enum {
+Mnemonic :: enum {
 	NOP,
 	MOV,
 	HLT,
@@ -471,33 +495,36 @@ Instruction_Mnemonic :: enum {
 	RRC,
 	RAL,
 	RAR,
+	
+	// NOTE: This condition group is order dependent
 	JMP,
-	JC,
-	JNC,
-	JZ,
 	JNZ,
+	JZ,
+	JNC,
+	JC,
+	JPO,
+	JPE,
 	JP,
 	JM,
-	JPE,
-	JPO,
 	CALL,
-	CC,
-	CNC,
-	CZ,
 	CNZ,
+	CZ,
+	CNC,
+	CC,
+	CPO,
+	CPE,
 	CP,
 	CM,
-	CPE,
-	CPO,
 	RET,
-	RC,
-	RNC,
-	RZ,
 	RNZ,
+	RZ,
+	RNC,
+	RC,
+	RPO,
+	RPE,
 	RP,
 	RM,
-	RPE,
-	RPO,
+	
 	RST,
 	IN,
 	OUT,
@@ -525,9 +552,15 @@ Instruction_Mnemonic :: enum {
 	DI,
 }
 
-Instruction :: struct {
-	mnemonic: Instruction_Mnemonic,
+
+Dest :: struct #raw_union {
 	dest: Register,
+	condition: Condition,
+}
+
+Instruction :: struct {
+	mnemonic: Mnemonic,
+	using _: Dest,
 	source: Register,
 	// TODO cycles: int,
 	size: u16,
@@ -553,11 +586,22 @@ regs: struct {
 	PC, SP: u16,
 }
 
+Condition :: enum {
+	NZ = 0b000,
+	Z  = 0b001,
+	NC = 0b010,
+	C  = 0b011,
+	PO = 0b100,
+	PE = 0b101,
+	P  = 0b110,
+	M  = 0b111,
+}
+
 Flag :: enum {
-	Z, 
-	S, 
-	P, 
-	CY, 
+	Z  = 0b000, 
+	CY = 0b010,
+	P  = 0b100, 
+	S  = 0b110, 
 	// AC, // NOTE: this flag is not used in space invaders
 }
 
