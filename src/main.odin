@@ -24,7 +24,7 @@ main :: proc() {
 
 exec_8080_instruction :: proc(using instruction: Instruction) {
 	addr := transmute(u16)[2]byte{regs.r[.H], regs.r[.L]}
-	#partial switch mnemonic {
+	switch mnemonic {
 		case .NOP: // do nothing
 		
 		// Data Transfer:
@@ -44,7 +44,7 @@ exec_8080_instruction :: proc(using instruction: Instruction) {
 		}
 		case .LXI:
 		{
-			target := dest == .NULL ? cast(^[2]byte)(&regs.SP) : cast(^[2]byte)&regs.r[dest]
+			target := pair == .SP ? cast(^[2]byte)(&regs.SP) : cast(^[2]byte)&regs.r[dest]
 			target[0] = bytes[1]
 			target[1] = bytes[0]
 		}
@@ -72,7 +72,8 @@ exec_8080_instruction :: proc(using instruction: Instruction) {
 		}
 		case .LDAX:
 		{
-			addr := transmute(u16)([2]byte{regs.r[dest], regs.r[Register(u8(dest)+1)]})
+			reg := Register(u8(pair) << 1)
+			addr := transmute(u16)([2]byte{regs.r[reg], regs.r[Register(u8(reg)+1)]})
 			regs.A = memory[addr]
 		}
 		case .STAX:
@@ -149,12 +150,14 @@ exec_8080_instruction :: proc(using instruction: Instruction) {
 		}
 		case .INX, .DCX:
 		{
-			target := dest == .NULL ? &regs.PC : (^u16)(&regs.r[dest])
+			reg := Register(u8(pair) << 1)
+			target := pair == .SP ? &regs.PC : (^u16)(&regs.r[reg])
 			target^ = mnemonic == .INX ? target^ + 1 : target^ - 1
 		}
 		case .DAD:
 		{
-			value := dest == .NULL ? regs.PC : (^u16)(&regs.r[dest])^
+			reg := Register(u8(pair) << 1)
+			value := pair == .SP ? regs.PC : (^u16)(&regs.r[reg])^
 			hl := (^u16)(&regs.H) 
 			hl^ += value
 			set_flag(.CY, hl^ < value)
@@ -278,8 +281,74 @@ exec_8080_instruction :: proc(using instruction: Instruction) {
 				regs.PC = transmute(u16)([2]byte{memory[regs.SP+1], memory[regs.SP]})
 			}
 		}
-		
-		case: fmt.panicf("instruction not implemented: %s", mnemonic)
+		case .RST:
+		{
+			memory[regs.SP-1] = u8(regs.PC >> 8)
+			memory[regs.SP-2] = u8(regs.PC & 0x0f)
+			regs.SP -= 2
+			regs.PC = 8 * u16(dest)
+		}
+		case .PCHL:
+		{
+			regs.PC = (cast(^u16)&regs.H)^
+		}
+		// special
+		case .PUSH:
+		{
+			if pair == .SP {
+				// |S|Z|0|AC|0|P|1|CY|
+				status_word := u8(.S in flags) << 7 | u8(.Z in flags) << 6 | u8(.P in flags) << 2 | 0b10 | u8(.CY in flags)
+				memory[regs.SP-1] = regs.A
+				memory[regs.SP-2] = status_word
+			} else {
+				rh := Register(u8(pair) << 1)
+				rl := Register(u8(rh) + 1)
+				memory[regs.SP-1] = regs.r[rh] 
+				memory[regs.SP-2] = regs.r[rl] 
+			}
+			regs.SP -= 2
+		}
+		case .POP:
+		{
+			if pair == .SP {
+				status := memory[regs.SP]
+				set_flag(.CY, status & 1 == 1)
+				set_flag(.P, (status >> 2) & 1 == 1)
+				set_flag(.Z, (status >> 6) & 1 == 1)
+				set_flag(.S, (status >> 7) & 1 == 1)
+				regs.A = memory[regs.SP+1]
+			} else {
+				rh := Register(u8(pair) << 1)
+				rl := Register(u8(rh) + 1)
+				regs.r[rl] = memory[regs.SP]
+				regs.r[rh] = memory[regs.SP+1]
+			}
+			regs.SP += 2
+		}
+		case .XTHL:
+		{
+			pair := [2]byte{regs.L, regs.H}
+			regs.L = memory[regs.SP]
+			regs.H = memory[regs.SP+1]
+			memory[regs.SP] = pair[0]
+			memory[regs.SP+1] = pair[1]
+		}
+		case .SPHL:
+		{
+			regs.SP = (^u16)(&regs.H)^
+		}
+		case .IN, .OUT, .EI, .DI:
+		{
+			// TODO
+			fmt.eprintln("instruction not implemented:")
+			print_8080_instruction(instruction)
+			os.exit(1)
+		}
+		case .HLT:
+		{
+			fmt.println("HALT")
+			os.exit(0)
+		}
 	}
 }
 
@@ -292,8 +361,8 @@ decode_8080_instruction :: proc(buffer: []byte) -> Instruction {
 	}
 	dest := cast(Register)(opcode & 0b00_111_000 >> 3)
 	source := cast(Register)(opcode & 0b00_000_111)
+	pair := Register_Pair(u8(dest) >> 1)
 	opdigits := opcode >> 6
-	bdhsp := bit_set[Register]{.B, .D, .H, .NULL}
 	
 	if opcode == 0x0 {
 		return Instruction{.NOP, {dest=dest}, source, 1, bytes}
@@ -362,6 +431,41 @@ decode_8080_instruction :: proc(buffer: []byte) -> Instruction {
 		mnemonic := Mnemonic(u8(Mnemonic.CALL)+1 + u8(dest))
 		return Instruction{mnemonic, {condition=Condition(dest)}, source, 3, bytes}
 	}
+	
+	if opdigits == 0b11 && source == auto_cast 0b111 {
+		return Instruction{.RST, {dest=dest}, source, 1, bytes}
+	}
+
+	if opdigits == 0b00 {
+		if u8(dest) & 1 == 1 {
+			if source == auto_cast 0b001 {
+				return Instruction{.DAD, {pair=pair}, source, 1, bytes}
+			}
+			if source == auto_cast 0b011 {
+				return Instruction{.DCX, {pair=pair}, source, 1, bytes}
+			}
+		} else {
+			if source == auto_cast 0b011 {
+				return Instruction{.INX, {pair=pair}, source, 1, bytes}
+			}
+		}
+	}
+
+	
+	if opdigits == 0b11 && u8(dest) & 1 == 0 { // PUSH & POP
+		if source == auto_cast 0b101 {
+			return Instruction{.PUSH, {pair=pair}, source, 1, bytes}
+		}
+		if source == auto_cast 0b001 {
+			return Instruction{.POP, {pair=pair}, source, 1, bytes}
+		}
+	}
+
+	if opdigits == 0b00 && source == auto_cast 0b001 {
+		if u8(dest) & 1 == 0 {
+			return Instruction{.LXI, {pair=pair}, source, 3, bytes}
+		}
+	}
 
 	switch opcode {
 		case 0xc6: return Instruction{.ADI, {dest=dest}, source, 2, bytes}
@@ -406,45 +510,6 @@ decode_8080_instruction :: proc(buffer: []byte) -> Instruction {
 		case 0xfb: return Instruction{.EI, {dest=dest}, source, 1, bytes}
 		case 0xf3: return Instruction{.DI, {dest=dest}, source, 1, bytes}
 	}
-
-	if opdigits == 0b11 && source == auto_cast 0b111 {
-		return Instruction{.RST, {dest=dest}, source, 1, bytes}
-	}
-
-	if opdigits == 0b00 {
-		if Register(int(dest)-1) in bdhsp {
-			if source == auto_cast 0b001 {
-				return Instruction{.DAD, {dest=Register(int(dest)-1)}, source, 1, bytes}
-			}
-			if source == auto_cast 0b011 {
-				return Instruction{.DCX, {dest=Register(int(dest)-1)}, source, 1, bytes}
-			}
-		}
-		if dest in bdhsp {
-			if source == auto_cast 0b011 {
-				return Instruction{.INX, {dest=dest}, source, 1, bytes}
-			}
-		}
-	}
-
-	
-	if opdigits == 0b11 { // PUSH & POP
-		if dest in bdhsp {
-			if source == auto_cast 0b101 {
-				return Instruction{.PUSH, {dest=dest}, source, 1, bytes}
-			}
-			if source == auto_cast 0b001 {
-				return Instruction{.POP, {dest=dest}, source, 1, bytes}
-			}
-		}
-	}
-
-	if opdigits == 0b00 && source == auto_cast 0b001 {
-		if dest in bdhsp {
-			return Instruction{.LXI, {dest=dest}, source, 3, bytes}
-		}
-	}
-	
 	fmt.panicf("instruction not implemented: 0x%02x\n", opcode)	
 }
 
@@ -468,7 +533,7 @@ print_8080_instruction :: proc(using instruction: Instruction) {
 	fmt.printf("%04x %s\n", regs.PC, mnemonic)
 }
 
-Mnemonic :: enum {
+Mnemonic :: enum u8 {
 	NOP,
 	MOV,
 	HLT,
@@ -552,10 +617,17 @@ Mnemonic :: enum {
 	DI,
 }
 
+Register_Pair :: enum u8 {
+	BC = 0b00,
+	DE = 0b01,
+	HL = 0b10,
+	SP = 0b11,
+}
 
 Dest :: struct #raw_union {
 	dest: Register,
 	condition: Condition,
+	pair: Register_Pair,
 }
 
 Instruction :: struct {
@@ -567,7 +639,7 @@ Instruction :: struct {
 	bytes: [2]byte,
 }
 
-Register :: enum {
+Register :: enum u8 {
 	A = 0b111,
 	B = 0b000,
 	C = 0b001,
@@ -586,7 +658,7 @@ regs: struct {
 	PC, SP: u16,
 }
 
-Condition :: enum {
+Condition :: enum u8 {
 	NZ = 0b000,
 	Z  = 0b001,
 	NC = 0b010,
@@ -597,7 +669,7 @@ Condition :: enum {
 	M  = 0b111,
 }
 
-Flag :: enum {
+Flag :: enum u8 {
 	Z  = 0b000, 
 	CY = 0b010,
 	P  = 0b100, 
