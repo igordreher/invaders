@@ -2,60 +2,59 @@ package main
 
 import "core:fmt"
 import "core:os"
-
-testing: bool
-execute := true
+import "core:testing"
 
 main :: proc() {
 	if len(os.args) < 2 {
 		fmt.panicf("not enough arguments\n")
 	}
 	
-	file_size: u16
-	if os.args[1] == "--test" {
-		file := #load("../cpudiag.bin")
-		copy(memory[:], file)
-		file_size = auto_cast len(file)
-		testing = true
-	} else {
-		file_path := os.args[1]
-		h, err := os.open(file_path)
-		if err != 0 {
-			fmt.panicf("failed to open file '%s'\n", file_path)
-		}
-		size, _ := os.file_size(h)
-		if size > i64(max(u16)) {
-			fmt.panicf("size too long\n")
-		}
-		_, rerr := os.read(h, memory[:])
-		if rerr != 0 {
-			fmt.printf("failed to read file '%s'\n", file_path)
-		}
-		file_size = auto_cast size
+	file_path := os.args[1]
+	h, err := os.open(file_path)
+	if err != 0 {
+		fmt.panicf("failed to open file '%s'\n", file_path)
+	}
+	size, _ := os.file_size(h)
+	if size > i64(max(u16)) {
+		fmt.panicf("size too long\n")
+	}
+	_, rerr := os.read(h, memory[:])
+	if rerr != 0 {
+		fmt.printf("failed to read file '%s'\n", file_path)
 	}
 	
-	if testing 
-	{
-	    // Fix the first instruction to be JMP 0x100    
-		regs.PC = 0x100
-
-	    //Fix the stack pointer from 0x6ad to 0x7ad    
-	    // this 0x06 byte 112 in the code, which is    
-	    // byte 112 + 0x100 = 368 in memory    
-	    memory[368] = 0x7
-
-	    //Skip DAA test    
-	    memory[0x59c] = 0xc3 //JMP
-	    memory[0x59d] = 0xc2
-	    memory[0x59e] = 0x05
+	for regs.PC < auto_cast size {
+		instruction := decode_8080_instruction(memory[:size], regs.PC)
+		print_8080_instruction(instruction)
+		regs.PC += instruction.size
+		exec_8080_instruction(instruction)
 	}
+}
+
+@(test)
+test_8080 :: proc(^testing.T) {
+	file := #load("../cpudiag.bin")
+	copy(memory[:], file)
+	file_size := len(file)
 	
-	for regs.PC < file_size {
-	// for {
+    // Fix the first instruction to be JMP 0x100    
+	regs.PC = 0x100
+
+    //Fix the stack pointer from 0x6ad to 0x7ad    
+    // this 0x06 byte 112 in the code, which is    
+    // byte 112 + 0x100 = 368 in memory    
+    memory[368] = 0x7
+
+    //Skip DAA test    
+    memory[0x59c] = 0xc3 //JMP
+    memory[0x59d] = 0xc2
+    memory[0x59e] = 0x05
+	
+	for regs.PC < auto_cast file_size {
 		instruction := decode_8080_instruction(memory[:file_size], regs.PC)
 		print_8080_instruction(instruction)
 		regs.PC += instruction.size
-		if execute do exec_8080_instruction(instruction)
+		exec_8080_instruction(instruction)
 	}
 }
 
@@ -293,7 +292,7 @@ exec_8080_instruction :: proc(instruction: Instruction) {
 		}
 		case .CALL:
 		{
-			if testing {
+			when ODIN_TEST {
 				b := transmute(u16le)bytes
 				if b == 0x0689 {
 					fmt.println("CPU HAS FAILED")
