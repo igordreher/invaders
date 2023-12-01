@@ -269,19 +269,19 @@ exec_8080_instruction :: proc(instruction: Instruction) {
 		case .RRC:
 		{
 			cy := regs.A & 1
-			regs.A = regs.A >> 1 & (cy << 7)
+			regs.A = regs.A >> 1 | (cy << 7)
 			set_flag(.CY, cy == 1)
 		}
 		case .RAL:
 		{
 			cy := regs.A >> 7 == 1
-			regs.A = regs.A << 1 & u8(.CY in flags)
+			regs.A = regs.A << 1 | u8(.CY in flags)
 			set_flag(.CY, cy)
 		}
 		case .RAR:
 		{
 			cy := regs.A & 1 == 1
-			regs.A = regs.A >> 1 & (u8(.CY in flags) << 7)
+			regs.A = regs.A >> 1 | (u8(.CY in flags) << 7)
 			set_flag(.CY, cy)
 		}
 		case .CMA:
@@ -591,24 +591,20 @@ print_8080_instruction :: proc(using instruction: Instruction) {
 	#partial switch mnemonic {
 		case .ADD, .SBB: 
 		{
-			if source != .NULL {
-				fmt.printf(" %v", source)
-			} else {
-				fmt.printf(" M")
-			}
+			print_reg(source)
 		}
 		case .MOV:
 		{
-			if source != .NULL {
-				fmt.printf(" %v", source)
-			} else {
-				fmt.printf(" M")
-			}
-			if dest != .NULL {
-				fmt.printf(", %v", dest)
-			} else {
-				fmt.printf(" M")
-			}
+			print_reg(source)
+			fmt.printf(",")
+			print_reg(dest)
+		}
+	}
+	print_reg :: proc(reg: Register) {
+		if reg != .NULL {
+			fmt.printf(" %v", reg)
+		} else {
+			fmt.printf(" M")
 		}
 	}
 	if size == 2 {
