@@ -73,6 +73,14 @@ exec_8080_instruction :: proc(instruction: Instruction) {
 	pair := Register_Pair(u8(dest) >> 1)
 	addr_pair := cast(u16)transmute(u16be)regs.p[pair]
 	condition := Condition(dest)
+
+	when CPU_DIAG {
+		if pc == 0x689 {
+			fmt.println("CPU TEST FAILED")
+			os.exit(1)
+		}
+	}
+	
 	switch mnemonic {
 		case .NOP: // do nothing
 		
@@ -159,28 +167,28 @@ exec_8080_instruction :: proc(instruction: Instruction) {
 		case .SUB:
 		{
 			value := source == .NULL ? memory[addr_hl] : regs.r[source]
+			set_flag(.CY, regs.A < value)
 			regs.A -= value
 			set_flags(regs.A)
-			set_flag(.CY, regs.A > value)
 		}
 		case .SUI:
 		{
+			set_flag(.CY, regs.A < bytes[0])
 			regs.A -= bytes[0]
 			set_flags(regs.A)
-			set_flag(.CY, regs.A > bytes[0])
 		}
 		case .SBB:
 		{
 			value := source == .NULL ? memory[addr_hl] : regs.r[source]
+			set_flag(.CY, regs.A < value)
 			regs.A = regs.A - value - u8(.CY in flags)
 			set_flags(regs.A)
-			set_flag(.CY, regs.A > value)
 		}
 		case .SBI:
 		{
+			set_flag(.CY, regs.A < bytes[0])
 			regs.A = regs.A - bytes[0] - u8(.CY in flags)
 			set_flags(regs.A)
-			set_flag(.CY, regs.A > bytes[0])
 		}
 		case .INR, .DCR:
 		{
@@ -246,9 +254,9 @@ exec_8080_instruction :: proc(instruction: Instruction) {
 		{
 			value := source == .NULL ? memory[addr_hl] : regs.r[source]
 			if mnemonic == .CPI do value = bytes[0]
+			set_flag(.CY, regs.A < value)
 			result := regs.A - value
 			set_flags(result)
-			set_flag(.CY, regs.A < value)
 		}
 		case .RLC:
 		{
@@ -299,40 +307,10 @@ exec_8080_instruction :: proc(instruction: Instruction) {
 		}
 		case .CALL:
 		{
-			when CPU_DIAG {
-				b := transmute(u16le)bytes
-				if b == 0x0689 {
-					fmt.println("CPU HAS FAILED")
-					fmt.printf("flags: %v\n", flags)
-					fmt.printf("registers: %v\n", regs.r)
-					fmt.printf("PC: %v\n", regs.PC)
-					fmt.printf("SP: %v\n", regs.SP)
-					os.exit(1)
-				}
-	            if b == 5 {
-	                if regs.C == 9 {
-	                    offset := regs.DE.v
-						i := u16be(3) //skip the prefix bytes
-	                    for memory[offset+i] != '$' {
-	                        fmt.printf("%c", memory[offset+i])
-							i += 1
-						}
-	                    fmt.printf("\n")
-						os.exit(0)
-	                } else if regs.C == 2 {
-	                    //saw this in the inspected code, never saw it called
-	                    fmt.printf("print char routine called\n")
-						os.exit(0)
-	                }
-	            } else if transmute(u16le)bytes == 0 {
-					os.exit(0)
-	            }
-			} else {
-				memory[regs.SP-1] = u8(regs.PC>>8)
-				memory[regs.SP-2] = u8(regs.PC)
-				regs.SP -= 2
-				regs.PC = auto_cast transmute(u16le)bytes
-			}
+			memory[regs.SP-1] = u8(regs.PC>>8)
+			memory[regs.SP-2] = u8(regs.PC)
+			regs.SP -= 2
+			regs.PC = auto_cast transmute(u16le)bytes
 		}
 		case .CZ, .CNZ, .CC, .CNC, .CPE, .CPO, .CP, .CM:
 		{
@@ -619,6 +597,7 @@ print_8080_instruction :: proc(using instruction: Instruction) {
 	} else if size == 3 {
 		fmt.printf(" %04x", cast(u16)transmute(u16le)bytes)
 	}
+	when CPU_DIAG do fmt.printf("\tA=%02x, C=%d, P=%d, S=%d, Z=%d, SP=%v\n", regs.A, u8(.CY in flags), u8(.P in flags), u8(.S in flags), u8(.Z in flags), regs.SP)
 	
 	fmt.printf("\n")
 }
