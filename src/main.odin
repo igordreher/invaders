@@ -180,15 +180,17 @@ exec_8080_instruction :: proc(instruction: Instruction) {
 		case .SBB:
 		{
 			value := source == .NULL ? memory[addr_hl] : regs.r[source]
-			set_flag(.CY, regs.A < value)
+			a := regs.A
 			regs.A = regs.A - value - u8(.CY in flags)
 			set_flags(regs.A)
+			set_flag(.CY, a < regs.A)
 		}
 		case .SBI:
 		{
-			set_flag(.CY, regs.A < bytes[0])
+			a := regs.A
 			regs.A = regs.A - bytes[0] - u8(.CY in flags)
 			set_flags(regs.A)
+			set_flag(.CY, a < regs.A)
 		}
 		case .INR, .DCR:
 		{
@@ -586,18 +588,35 @@ print_8080_instruction :: proc(using instruction: Instruction) {
 	// TODO: improve this
 	opcode := opdigits << 6 | u8(dest) << 3 | u8(source)
 	fmt.printf("%04x %02x %s", regs.PC, opcode, mnemonic)
-	// if size > 1 {
-	// 	fmt.printf(" %02x", bytes[0])
-	// 	if size == 3 {
-	// 		fmt.printf(" %02x", bytes[1])
-	// 	}
-	// }
+	#partial switch mnemonic {
+		case .ADD, .SBB: 
+		{
+			if source != .NULL {
+				fmt.printf(" %v", source)
+			} else {
+				fmt.printf(" M")
+			}
+		}
+		case .MOV:
+		{
+			if source != .NULL {
+				fmt.printf(" %v", source)
+			} else {
+				fmt.printf(" M")
+			}
+			if dest != .NULL {
+				fmt.printf(", %v", dest)
+			} else {
+				fmt.printf(" M")
+			}
+		}
+	}
 	if size == 2 {
 		fmt.printf(" %02x", bytes[0])
 	} else if size == 3 {
 		fmt.printf(" %04x", cast(u16)transmute(u16le)bytes)
 	}
-	when CPU_DIAG do fmt.printf("\tA=%02x, C=%d, P=%d, S=%d, Z=%d, SP=%v\n", regs.A, u8(.CY in flags), u8(.P in flags), u8(.S in flags), u8(.Z in flags), regs.SP)
+	when CPU_DIAG do fmt.printf("\tA=%02x, B=%02x, C=%02x, D=%02x, E=%02x, H=%02x, L=%02x, CY=%d, P=%d, S=%d, Z=%d, SP=%v\n", regs.A, regs.B, regs.C, regs.D, regs.E, regs.H, regs.L, u8(.CY in flags), u8(.P in flags), u8(.S in flags), u8(.Z in flags), regs.SP)
 	
 	fmt.printf("\n")
 }
