@@ -4,7 +4,14 @@ import "core:fmt"
 import "core:os"
 import "core:testing"
 
+CPU_DIAG :: #config(CPU_DIAG, ODIN_TEST)
+
 main :: proc() {
+	when CPU_DIAG {
+		test_8080(nil)
+		return
+	}
+
 	if len(os.args) < 2 {
 		fmt.panicf("not enough arguments\n")
 	}
@@ -165,13 +172,13 @@ exec_8080_instruction :: proc(instruction: Instruction) {
 		case .SBB:
 		{
 			value := source == .NULL ? memory[addr_hl] : regs.r[source]
-			regs.A -= value - u8(.CY in flags)
+			regs.A = regs.A - value - u8(.CY in flags)
 			set_flags(regs.A)
 			set_flag(.CY, regs.A > value)
 		}
 		case .SBI:
 		{
-			regs.A -= bytes[0] - u8(.CY in flags)
+			regs.A = regs.A - bytes[0] - u8(.CY in flags)
 			set_flags(regs.A)
 			set_flag(.CY, regs.A > bytes[0])
 		}
@@ -292,7 +299,7 @@ exec_8080_instruction :: proc(instruction: Instruction) {
 		}
 		case .CALL:
 		{
-			when ODIN_TEST {
+			when CPU_DIAG {
 				b := transmute(u16le)bytes
 				if b == 0x0689 {
 					fmt.println("CPU HAS FAILED")
