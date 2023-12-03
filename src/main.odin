@@ -3,6 +3,9 @@ package main
 import "core:fmt"
 import "core:os"
 import "core:testing"
+import "core:mem"
+import "core:time"
+import sdl "vendor:sdl2"
 
 CPU_DIAG :: #config(CPU_DIAG, ODIN_TEST)
 
@@ -10,6 +13,18 @@ main :: proc() {
 	when CPU_DIAG {
 		test_8080(nil)
 		return
+	}
+
+	sdl.Init({.VIDEO})
+	window := sdl.CreateWindow("Space Invaders", sdl.WINDOWPOS_CENTERED, sdl.WINDOWPOS_CENTERED, WIDTH, HEIGHT, {})
+	if window == nil {
+		fmt.eprintln("failed to create SDL window")
+		os.exit(1)
+	}
+	renderer := sdl.CreateRenderer(window, -1, {.SOFTWARE})
+	if renderer == nil {
+		fmt.eprintln("failed to create SDL renderer")
+		os.exit(1)
 	}
 
 	if len(os.args) < 2 {
@@ -30,11 +45,97 @@ main :: proc() {
 		fmt.printf("failed to read file '%s'\n", file_path)
 	}
 	
-	for regs.PC < auto_cast size {
+	texture := sdl.CreateTexture(renderer, auto_cast sdl.PixelFormatEnum.RGB888, sdl.TextureAccess.STREAMING, WIDTH, HEIGHT)
+	sdl_assert_err()
+		
+	last_interrupt := time.now()
+	game_loop: for regs.PC < auto_cast size {
+		event: sdl.Event
+		for sdl.PollEvent(&event) {
+			#partial switch event.type {
+				case .QUIT: break game_loop
+				case .KEYDOWN:
+					#partial switch event.key.keysym.sym {
+						case .LEFT: ports[1] |= 0x20
+						case .RIGHT: ports[1] |= 0x40
+					}
+				case .KEYUP:
+					#partial switch event.key.keysym.sym {
+						case .LEFT: ports[1] &= 0xDF
+						case .RIGHT: ports[1] &= 0xBF
+					}
+			}
+		}
+
 		instruction := decode_8080_instruction(memory[:size], regs.PC)
-		print_8080_instruction(instruction)
+		// print_8080_instruction(instruction); fmt.printf("\n")
 		regs.PC += instruction.size
-		exec_8080_instruction(instruction)
+		if instruction.mnemonic == .IN {
+			regs.A = ports[memory[regs.PC-instruction.size+1]]
+			// machine_in(ports[memory[regs.PC-instruction.size+1]])
+		} else if instruction.mnemonic == .OUT {
+			ports[memory[regs.PC-instruction.size+1]] = regs.A
+			// machine_out(ports[memory[regs.PC-instruction.size+1]])
+		} else {
+			exec_8080_instruction(instruction)
+		}
+			
+		if time.duration_seconds(time.since(last_interrupt)) > 1/60 {
+			if interrupt_system {
+				render_vram(renderer, texture)
+				last_interrupt = time.now()
+			}
+		}
+	}
+}
+
+render_vram :: proc(renderer: ^sdl.Renderer, texture: ^sdl.Texture) {
+	sdl.SetRenderDrawColor(renderer, 255, 255, 0, 255)
+	sdl.RenderClear(renderer)
+
+	for i in 0..<WIDTH {
+		for j := 0; j < HEIGHT; j+= 8 {
+			offset := (HEIGHT-1-j)*(WIDTH*BPP) + (i*BPP)
+			pix := VRAM[(i*(HEIGHT/8)) + j/8]
+			p1 := (^u32)(&pixels[offset])
+			for p := 0; p < 8; p+=1 {
+				if 0 != (pix & (1<<u8(p))) do p1^ = 0xffffffff
+				else do p1^ = 0
+				p1 = mem.ptr_offset(p1, -WIDTH)
+			}
+		}
+	}
+	
+	sdl.UpdateTexture(texture, nil, &pixels[0], auto_cast WIDTH*BPP)
+	sdl_assert_err()
+	sdl.RenderCopy(renderer, texture, nil, nil)
+	sdl.RenderPresent(renderer)
+}
+sdl_assert_err :: proc(location := #caller_location) {
+	err := sdl.GetErrorString()
+	if err != "" {
+		fmt.eprintf("%d: %s", location.line, err)
+		os.exit(1)
+	}
+}
+
+machine_in :: proc(port: u8) {
+	
+}
+
+shift_offset: u8
+shift0: u8
+shift1: u8
+ports: [8]u8
+machine_out :: proc(port: u8, value: u8) {
+	switch port {
+		case 2: {
+			shift_offset = value & 0x7
+		}
+		case 4: {
+			shift0 = shift1
+			shift1 = value
+		}
 	}
 }
 
@@ -398,7 +499,7 @@ exec_8080_instruction :: proc(instruction: Instruction) {
 		}
 		case .EI, .DI:
 		{
-			interupt_system = mnemonic == .EI
+			interrupt_system = mnemonic == .EI
 		}
 		case .HLT:
 		{
@@ -799,6 +900,12 @@ Flag :: enum u8 {
 	// AC, // NOTE: this flag is not used in space invaders
 }
 
-interupt_system: bool
+interrupt_system: bool
 flags: bit_set[Flag]
-memory: [65_536]byte
+memory: [max(u16)]byte
+VRAM := memory[0x2400:0x4000]
+// pixels := [WIDTH*HEIGHT][BPP]byte{}
+pixels := [WIDTH*HEIGHT*BPP]byte{}
+BPP :: 4
+WIDTH :: 224
+HEIGHT :: 256
