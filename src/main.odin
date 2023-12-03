@@ -40,19 +40,13 @@ main :: proc() {
 
 @(test)
 test_8080 :: proc(^testing.T) {
-	// file := #load("../CPUTEST.COM")
 	file := #load("../cpudiag.bin")
 	
-	copy(memory[:], file)
-	file_size := len(file)
+	copy(memory[0x100:], file)
+	file_size := len(file) + 0x100
 	
     // Fix the first instruction to be JMP 0x100    
 	regs.PC = 0x100
-
-    //Fix the stack pointer from 0x6ad to 0x7ad    
-    // this 0x06 byte 112 in the code, which is    
-    // byte 112 + 0x100 = 368 in memory    
-    memory[368] = 0x7
 
     //Skip DAA test    
     memory[0x59c] = 0xc3 //JMP
@@ -232,16 +226,8 @@ exec_8080_instruction :: proc(instruction: Instruction) {
 		}
 		case .DAA:
 		{
-			v := u8(0)
-			if regs.A & 0x0f > 9 || .CY in flags {
-				v += 6
-			}
-			if regs.A >> 4 > 9 || .CY in flags {
-				v += 6 << 4
-			}
-			regs.A += v
-			set_flags(regs.A)
-			set_flag(.CY, regs.A < v)
+			fmt.eprintln("\nunimplemented instruction: DAA")
+			os.exit(1)
 		}
 		// Logical group
 		case .ANA, .ANI:
@@ -557,10 +543,8 @@ decode_8080_instruction :: proc(buffer: []byte, pc: u16) -> Instruction {
 		case 0xf9: return Instruction{.SPHL, 1}
 		case 0xe9: return Instruction{.PCHL, 1}
 		
-		case 0x02: return Instruction{.STAX, 1}
-		case 0x12: return Instruction{.STAX, 1}
-		case 0x0a: return Instruction{.LDAX, 1}
-		case 0x1a: return Instruction{.LDAX, 1}
+		case 0x02, 0x12: return Instruction{.STAX, 1}
+		case 0x0a, 0x1a: return Instruction{.LDAX, 1}
 		
 		case 0x2f: return Instruction{.CMA, 1}
 		case 0x37: return Instruction{.STC, 1}
@@ -571,7 +555,7 @@ decode_8080_instruction :: proc(buffer: []byte, pc: u16) -> Instruction {
 		case 0xfb: return Instruction{.EI, 1}
 		case 0xf3: return Instruction{.DI, 1}
 
-		case 0x0, 0x20, 0x38, 0x30, 0x28: 
+		case: 
 			return Instruction{.NOP, 1}
 	}
 	fmt.panicf("instruction not implemented: 0x%02x\n", opcode)	
@@ -607,11 +591,15 @@ print_8080_instruction :: proc(using instruction: Instruction) -> int {
 	pair := Register_Pair(u8(dest) >> 1)
 	c := fmt.printf("%04x %02x %s", regs.PC, opcode, mnemonic)
 	#partial switch mnemonic {
-		case .ADD, .SBB, .ADC, .INR, .SUB, .DCR, .CMP: 
+		case .ADD, .SBB, .ADC, .SUB, .CMP, .ORA, .XRA, .ANA: 
 		{
 			c += print_reg(source)
 		}
-		case .LDAX, .LXI, .STAX, .INX, .DCX, .DAD:
+		case .INR, .DCR:
+		{
+			c += print_reg(dest)
+		}
+		case .LDAX, .LXI, .STAX, .INX, .DCX, .DAD, .PUSH, .POP:
 		{
 			c += print_pair(auto_cast (u8(dest) >> 1))
 		}
@@ -635,16 +623,12 @@ print_8080_instruction :: proc(using instruction: Instruction) -> int {
 		}
 	}
 	print_pair :: proc(pair: Register_Pair) -> int {
-		if pair != .SP {
-			return fmt.printf(" %v", pair)
-		} else {
-			return fmt.printf(" SP")
-		}
+		return fmt.printf(" %v", pair)
 	}
 	if size == 2 {
 		c += fmt.printf(" %02x", memory[regs.PC+1])
 	} else if size == 3 {
-		c += fmt.printf(" %02x, %02x", memory[regs.PC+1], memory[regs.PC+2])
+		c += fmt.printf(" %04x", transmute(u16le)[2]byte{memory[regs.PC+1], memory[regs.PC+2]})
 	}
 	return c
 	
@@ -655,7 +639,21 @@ print_registers :: proc(prev_length: int) {
 	for _ in 0..<50-prev_length {
 		fmt.printf(" ")
 	}
-	fmt.printf("A=%02x, B=%02x, C=%02x, D=%02x, E=%02x, H=%02x, L=%02x, CY=%d, P=%d, S=%d, Z=%d, SP=%04x\n", regs.A, regs.B, regs.C, regs.D, regs.E, regs.H, regs.L, u8(.CY in flags), u8(.P in flags), u8(.S in flags), u8(.Z in flags), regs.SP)
+	fmt.printf("A=%02x, B=%02x, C=%02x, D=%02x, E=%02x, H=%02x, L=%02x, CY=%d, P=%d, S=%d, Z=%d, SP=%04x", regs.A, regs.B, regs.C, regs.D, regs.E, regs.H, regs.L, u8(.CY in flags), u8(.P in flags), u8(.S in flags), u8(.Z in flags), regs.SP)
+	fmt.printf(";")
+	for addr in 0x06a4..<0x06ab {
+		fmt.printf("  %04x=%02x", addr, memory[addr])
+	}
+	fmt.printf("\n")
+	// 06A4	A6 06           TEMPP:	DW	TEMP0	;POINTER USED TO TEST "LHLD","SHLD",
+	// 	                			; AND "LDAX" INSTRUCTIONS
+	// 	                ;
+	// 06A6	00              TEMP0:	DS	1	;TEMPORARY STORAGE FOR CPU TEST MEMORY LOCATIONS
+	// 06A7	00              TEMP1:	DS	1	;TEMPORARY STORAGE FOR CPU TEST MEMORY LOCATIONS
+	// 06A8	00              TEMP2	DS	1	;TEMPORARY STORAGE FOR CPU TEST MEMORY LOCATIONS
+	// 06A9	00              TEMP3:	DS	1	;TEMPORARY STORAGE FOR CPU TEST MEMORY LOCATIONS
+	// 06AA	00              TEMP4:	DS	1	;TEMPORARY STORAGE FOR CPU TEST MEMORY LOCATIONS
+	// 06AB
 }
 
 Mnemonic :: enum u8 {
