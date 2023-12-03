@@ -40,7 +40,9 @@ main :: proc() {
 
 @(test)
 test_8080 :: proc(^testing.T) {
+	// file := #load("../CPUTEST.COM")
 	file := #load("../cpudiag.bin")
+	
 	copy(memory[:], file)
 	file_size := len(file)
 	
@@ -59,25 +61,36 @@ test_8080 :: proc(^testing.T) {
 	
 	for regs.PC < auto_cast file_size {
 		instruction := decode_8080_instruction(memory[:file_size], regs.PC)
-		print_8080_instruction(instruction)
+		c := print_8080_instruction(instruction)
 		regs.PC += instruction.size
 		exec_8080_instruction(instruction)
+		print_registers(c)
 	}
 }
 
 exec_8080_instruction :: proc(instruction: Instruction) {
 	using instruction
-	pc := regs.PC - size // for debug
-	addr_hl := cast(u16)transmute(u16be)regs.HL
-	addr_bytes := cast(u16)transmute(u16le)bytes
+	pc := regs.PC - size 
+	opcode := memory[pc]
+	dest := cast(Register)(opcode & 0b00_111_000 >> 3)
+	source := cast(Register)(opcode & 0b00_000_111)
 	pair := Register_Pair(u8(dest) >> 1)
-	addr_pair := cast(u16)transmute(u16be)regs.p[pair]
+	addr_hl := cast(u16)regs.HL.v
+	bytes: [2]byte
+	for i in 0..<instruction.size-1 {
+		bytes[i] = memory[pc+1+i]
+	}
+	word :=	cast(u16) transmute(u16le)bytes
+	addr_pair := cast(u16)regs.p[pair].v
 	condition := Condition(dest)
 
 	when CPU_DIAG {
 		if pc == 0x689 {
-			fmt.println("CPU TEST FAILED")
+			fmt.println("\nCPU TEST FAILED")
 			os.exit(1)
+		} else if pc == 0x069B {
+			fmt.println("\nCPU OK")
+			os.exit(0)
 		}
 	}
 	
@@ -101,27 +114,30 @@ exec_8080_instruction :: proc(instruction: Instruction) {
 		}
 		case .LXI:
 		{
-			target := pair == .SP ? cast(^Pair)(&regs.SP) : &regs.p[pair]
-			target.H = bytes[1]
-			target.L = bytes[0]
+			if pair == .SP {
+				regs.SP = word
+			} else {
+				regs.p[pair].H = bytes[1]
+				regs.p[pair].L = bytes[0]
+			}
 		}
 		case .LDA:
 		{
-			regs.A = memory[addr_bytes]
+			regs.A = memory[word]
 		}
 		case .STA:
 		{
-			memory[addr_bytes] = regs.A
+			memory[word] = regs.A
 		}
 		case .LHLD:
 		{
-			regs.L = memory[addr_bytes]
-			regs.H = memory[addr_bytes+1]
+			regs.L = memory[word]
+			regs.H = memory[word+1]
 		}
 		case .SHLD:
 		{
-			memory[addr_bytes] = regs.L
-			memory[addr_bytes+1] = regs.H
+			memory[word] = regs.L
+			memory[word+1] = regs.H
 		}
 		case .LDAX:
 		{
@@ -210,7 +226,7 @@ exec_8080_instruction :: proc(instruction: Instruction) {
 		}
 		case .DAD:
 		{
-			value := pair == .SP ? cast(u16be)regs.SP : (&regs.p[pair].v)^
+			value := pair == .SP ? cast(u16be)regs.SP : regs.p[pair].v
 			regs.HL.v += value
 			set_flag(.CY, regs.HL.v < value)
 		}
@@ -254,8 +270,10 @@ exec_8080_instruction :: proc(instruction: Instruction) {
 		}
 		case .CMP, .CPI:
 		{
-			value := source == .NULL ? memory[addr_hl] : regs.r[source]
+			value: u8
 			if mnemonic == .CPI do value = bytes[0]
+			else if source == .NULL do value = memory[addr_hl]
+			else do value = regs.r[source]
 			set_flag(.CY, regs.A < value)
 			result := regs.A - value
 			set_flags(result)
@@ -299,12 +317,12 @@ exec_8080_instruction :: proc(instruction: Instruction) {
 		// Branch group
 		case .JMP:
 		{
-			regs.PC = auto_cast transmute(u16le)bytes
+			regs.PC = word
 		}
 		case .JZ, .JNZ, .JC, .JNC, .JPE, .JPO, .JP, .JM:
 		{
 			if (Flag(u8(condition) & 0b110) in flags) == bool(u8(condition) & 0b001) {
-				regs.PC = auto_cast transmute(u16le)bytes
+				regs.PC = word
 			}
 		}
 		case .CALL:
@@ -312,7 +330,7 @@ exec_8080_instruction :: proc(instruction: Instruction) {
 			memory[regs.SP-1] = u8(regs.PC>>8)
 			memory[regs.SP-2] = u8(regs.PC)
 			regs.SP -= 2
-			regs.PC = auto_cast transmute(u16le)bytes
+			regs.PC = word
 		}
 		case .CZ, .CNZ, .CC, .CNC, .CPE, .CPO, .CP, .CM:
 		{
@@ -321,7 +339,7 @@ exec_8080_instruction :: proc(instruction: Instruction) {
 				memory[regs.SP-2] = u8(regs.PC)
 				// (^u16)(&memory[regs.SP-2])^ = regs.PC 
 				regs.SP -= 2
-				regs.PC = auto_cast transmute(u16le)bytes
+				regs.PC = word
 			}
 		}
 		case .RET:
@@ -406,10 +424,6 @@ exec_8080_instruction :: proc(instruction: Instruction) {
 
 decode_8080_instruction :: proc(buffer: []byte, pc: u16) -> Instruction {
 	opcode := buffer[pc]
-	bytes: [2]byte
-	if regs.PC < auto_cast (len(buffer)-1) { // TODO: fix buffer overflow
-		bytes = (cast(^[2]byte)&buffer[regs.PC+1])^
-	}
 	dest := cast(Register)(opcode & 0b00_111_000 >> 3)
 	source := cast(Register)(opcode & 0b00_000_111)
 	pair := Register_Pair(u8(dest) >> 1)
@@ -417,83 +431,83 @@ decode_8080_instruction :: proc(buffer: []byte, pc: u16) -> Instruction {
 	
 	if opdigits == 0b01 { // MOV & HLT
 		if dest == .NULL && source == .NULL {
-			return Instruction{.HLT, dest, source, 1, bytes, opdigits}
+			return Instruction{.HLT, 1}
 		}
-		return Instruction{.MOV, dest, source, 1, bytes, opdigits}
+		return Instruction{.MOV, 1}
 	}
 	
 	if opdigits == 0b00 && source == .NULL {
-		return Instruction{.MVI, dest, source, 2, bytes, opdigits}
+		return Instruction{.MVI, 2}
 	}
 	
 	if opdigits == 0b00 { // INR & DCR
 		if source == auto_cast 0b100 {
-			return Instruction{.INR, dest, source, 1, bytes, opdigits}
+			return Instruction{.INR, 1}
 		} else if source == auto_cast 0b101 {
-			return Instruction{.DCR, dest, source, 1, bytes, opdigits}
+			return Instruction{.DCR, 1}
 		}
 	}
 
 	if opdigits == 0b10 { // ADD & ADC
 		if dest == auto_cast 0b000 {
-			return Instruction{.ADD, dest, source, 1, bytes, opdigits}
+			return Instruction{.ADD, 1}
 		} else if dest == auto_cast 0b001 {
-			return Instruction{.ADC, dest, source, 1, bytes, opdigits}
+			return Instruction{.ADC, 1}
 		}
 	}
 
 	if opdigits == 0b10 && dest == auto_cast 0b010 {
-		return Instruction{.SUB, dest, source, 1, bytes, opdigits}
+		return Instruction{.SUB, 1}
 	}
 	
 	if opdigits == 0b10 && dest == auto_cast 0b011 {
-		return Instruction{.SBB, dest, source, 1, bytes, opdigits}
+		return Instruction{.SBB, 1}
 	}
 	
 	if opdigits == 0b10 && dest == auto_cast 0b100 {
-		return Instruction{.ANA, dest, source, 1, bytes, opdigits}
+		return Instruction{.ANA, 1}
 	}
 
 	if opdigits == 0b10 && dest == auto_cast 0b101 {
-		return Instruction{.XRA, dest, source, 1, bytes, opdigits}
+		return Instruction{.XRA, 1}
 	}
 	
 	if opdigits == 0b10 && dest == auto_cast 0b110 {
-		return Instruction{.ORA, dest, source, 1, bytes, opdigits}
+		return Instruction{.ORA, 1}
 	}
 	
 	if opdigits == 0b10 && dest == auto_cast 0b111 {
-		return Instruction{.CMP, dest, source, 1, bytes, opdigits}
+		return Instruction{.CMP, 1}
 	}
 
 	if opdigits == 0b11 && source == auto_cast 0b010 { // Jcondition
 		mnemonic := Mnemonic(u8(Mnemonic.JMP)+1 + u8(dest))
-		return Instruction{mnemonic, dest, source, 3, bytes, opdigits}
+		return Instruction{mnemonic, 3}
 	}
 	if opdigits == 0b11 && source == auto_cast 0b000 { // Rcondition
 		mnemonic := Mnemonic(u8(Mnemonic.RET)+1 + u8(dest))
-		return Instruction{mnemonic, dest, source, 1, bytes, opdigits}
+		return Instruction{mnemonic, 1}
 	}
 	if opdigits == 0b11 && source == auto_cast 0b100 { // Ccondition
 		mnemonic := Mnemonic(u8(Mnemonic.CALL)+1 + u8(dest))
-		return Instruction{mnemonic, dest, source, 3, bytes, opdigits}
+		return Instruction{mnemonic, 3}
 	}
 	
 	if opdigits == 0b11 && source == auto_cast 0b111 {
-		return Instruction{.RST, dest, source, 1, bytes, opdigits}
+		return Instruction{.RST, 1}
 	}
 
 	if opdigits == 0b00 {
 		if u8(dest) & 1 == 1 {
 			if source == auto_cast 0b001 {
-				return Instruction{.DAD, dest, source, 1, bytes, opdigits}
+				return Instruction{.DAD, 1}
 			}
 			if source == auto_cast 0b011 {
-				return Instruction{.DCX, dest, source, 1, bytes, opdigits}
+				return Instruction{.DCX, 1}
 			}
 		} else {
 			if source == auto_cast 0b011 {
-				return Instruction{.INX, dest, source, 1, bytes, opdigits}
+				return Instruction{.INX, 1}
 			}
 		}
 	}
@@ -501,64 +515,64 @@ decode_8080_instruction :: proc(buffer: []byte, pc: u16) -> Instruction {
 	
 	if opdigits == 0b11 && u8(dest) & 1 == 0 { // PUSH & POP
 		if source == auto_cast 0b101 {
-			return Instruction{.PUSH, dest, source, 1, bytes, opdigits}
+			return Instruction{.PUSH, 1}
 		}
 		if source == auto_cast 0b001 {
-			return Instruction{.POP, dest, source, 1, bytes, opdigits}
+			return Instruction{.POP, 1}
 		}
 	}
 
 	if opdigits == 0b00 && source == auto_cast 0b001 {
 		if u8(dest) & 1 == 0 {
-			return Instruction{.LXI, dest, source, 3, bytes, opdigits}
+			return Instruction{.LXI, 3}
 		}
 	}
 
 	switch opcode {
-		case 0xc6: return Instruction{.ADI, dest, source, 2, bytes, opdigits}
-		case 0xce: return Instruction{.ACI, dest, source, 2, bytes, opdigits}
-		case 0xd6: return Instruction{.SUI, dest, source, 2, bytes, opdigits}
-		case 0xde: return Instruction{.SBI, dest, source, 2, bytes, opdigits}
-		case 0xe6: return Instruction{.ANI, dest, source, 2, bytes, opdigits}
-		case 0xee: return Instruction{.XRI, dest, source, 2, bytes, opdigits}
-		case 0xf6: return Instruction{.ORI, dest, source, 2, bytes, opdigits}
-		case 0xfe: return Instruction{.CPI, dest, source, 2, bytes, opdigits}
-		case 0x07: return Instruction{.RLC, dest, source, 1, bytes, opdigits}
-		case 0x0f: return Instruction{.RRC, dest, source, 1, bytes, opdigits}
-		case 0x17: return Instruction{.RAL, dest, source, 1, bytes, opdigits}
-		case 0x1f: return Instruction{.RAR, dest, source, 1, bytes, opdigits}
+		case 0xc6: return Instruction{.ADI, 2}
+		case 0xce: return Instruction{.ACI, 2}
+		case 0xd6: return Instruction{.SUI, 2}
+		case 0xde: return Instruction{.SBI, 2}
+		case 0xe6: return Instruction{.ANI, 2}
+		case 0xee: return Instruction{.XRI, 2}
+		case 0xf6: return Instruction{.ORI, 2}
+		case 0xfe: return Instruction{.CPI, 2}
+		case 0x07: return Instruction{.RLC, 1}
+		case 0x0f: return Instruction{.RRC, 1}
+		case 0x17: return Instruction{.RAL, 1}
+		case 0x1f: return Instruction{.RAR, 1}
 		
-		case 0xc3: return Instruction{.JMP, dest, source, 3, bytes, opdigits}
-		case 0xcd: return Instruction{.CALL, dest, source, 3, bytes, opdigits}
-		case 0xc9: return Instruction{.RET, dest, source, 1, bytes, opdigits}
+		case 0xc3: return Instruction{.JMP, 3}
+		case 0xcd: return Instruction{.CALL, 3}
+		case 0xc9: return Instruction{.RET, 1}
 		
-		case 0xdb: return Instruction{.IN, dest, source, 2, bytes, opdigits}
-		case 0xd3: return Instruction{.OUT, dest, source, 2, bytes, opdigits}
+		case 0xdb: return Instruction{.IN, 2}
+		case 0xd3: return Instruction{.OUT, 2}
 		
-		case 0x32: return Instruction{.STA, dest, source, 3, bytes, opdigits}
-		case 0x3a: return Instruction{.LDA, dest, source, 3, bytes, opdigits}
+		case 0x32: return Instruction{.STA, 3}
+		case 0x3a: return Instruction{.LDA, 3}
 		
-		case 0xeb: return Instruction{.XCHG, dest, source, 1, bytes, opdigits}
-		case 0xe3: return Instruction{.XTHL, dest, source, 1, bytes, opdigits}
-		case 0xf9: return Instruction{.SPHL, dest, source, 1, bytes, opdigits}
-		case 0xe9: return Instruction{.PCHL, dest, source, 1, bytes, opdigits}
+		case 0xeb: return Instruction{.XCHG, 1}
+		case 0xe3: return Instruction{.XTHL, 1}
+		case 0xf9: return Instruction{.SPHL, 1}
+		case 0xe9: return Instruction{.PCHL, 1}
 		
-		case 0x02: return Instruction{.STAX, .B, source, 1, bytes, opdigits}
-		case 0x12: return Instruction{.STAX, .D, source, 1, bytes, opdigits}
-		case 0x0a: return Instruction{.LDAX, .B, source, 1, bytes, opdigits}
-		case 0x1a: return Instruction{.LDAX, .D, source, 1, bytes, opdigits}
+		case 0x02: return Instruction{.STAX, 1}
+		case 0x12: return Instruction{.STAX, 1}
+		case 0x0a: return Instruction{.LDAX, 1}
+		case 0x1a: return Instruction{.LDAX, 1}
 		
-		case 0x2f: return Instruction{.CMA, dest, source, 1, bytes, opdigits}
-		case 0x37: return Instruction{.STC, dest, source, 1, bytes, opdigits}
-		case 0x3f: return Instruction{.CMC, dest, source, 1, bytes, opdigits}
-		case 0x27: return Instruction{.DAA, dest, source, 1, bytes, opdigits}
-		case 0x22: return Instruction{.SHLD, dest, source, 3, bytes, opdigits}
-		case 0x2a: return Instruction{.LHLD, dest, source, 3, bytes, opdigits}
-		case 0xfb: return Instruction{.EI, dest, source, 1, bytes, opdigits}
-		case 0xf3: return Instruction{.DI, dest, source, 1, bytes, opdigits}
+		case 0x2f: return Instruction{.CMA, 1}
+		case 0x37: return Instruction{.STC, 1}
+		case 0x3f: return Instruction{.CMC, 1}
+		case 0x27: return Instruction{.DAA, 1}
+		case 0x22: return Instruction{.SHLD, 3}
+		case 0x2a: return Instruction{.LHLD, 3}
+		case 0xfb: return Instruction{.EI, 1}
+		case 0xf3: return Instruction{.DI, 1}
 
 		case 0x0, 0x20, 0x38, 0x30, 0x28: 
-			return Instruction{.NOP, dest, source, 1, bytes, opdigits}
+			return Instruction{.NOP, 1}
 	}
 	fmt.panicf("instruction not implemented: 0x%02x\n", opcode)	
 }
@@ -584,37 +598,64 @@ set_flag :: proc(flag: Flag, v: bool) {
 	}
 }
 
-print_8080_instruction :: proc(using instruction: Instruction) {
+print_8080_instruction :: proc(using instruction: Instruction) -> int {
 	// TODO: improve this
-	opcode := opdigits << 6 | u8(dest) << 3 | u8(source)
-	fmt.printf("%04x %02x %s", regs.PC, opcode, mnemonic)
+	// opdigits
+	opcode := memory[regs.PC]
+	dest := cast(Register)(opcode & 0b00_111_000 >> 3)
+	source := cast(Register)(opcode & 0b00_000_111)
+	pair := Register_Pair(u8(dest) >> 1)
+	c := fmt.printf("%04x %02x %s", regs.PC, opcode, mnemonic)
 	#partial switch mnemonic {
-		case .ADD, .SBB: 
+		case .ADD, .SBB, .ADC, .INR, .SUB, .DCR, .CMP: 
 		{
-			print_reg(source)
+			c += print_reg(source)
+		}
+		case .LDAX, .LXI, .STAX, .INX, .DCX, .DAD:
+		{
+			c += print_pair(auto_cast (u8(dest) >> 1))
 		}
 		case .MOV:
 		{
-			print_reg(source)
-			fmt.printf(",")
-			print_reg(dest)
+			c += print_reg(dest)
+			c += fmt.printf(",")
+			c += print_reg(source)
+		}
+		case .MVI: 
+		{
+			c += print_reg(dest)
+			c += fmt.printf(",")
 		}
 	}
-	print_reg :: proc(reg: Register) {
+	print_reg :: proc(reg: Register) -> int {
 		if reg != .NULL {
-			fmt.printf(" %v", reg)
+			return fmt.printf(" %v", reg)
 		} else {
-			fmt.printf(" M")
+			return fmt.printf(" M")
+		}
+	}
+	print_pair :: proc(pair: Register_Pair) -> int {
+		if pair != .SP {
+			return fmt.printf(" %v", pair)
+		} else {
+			return fmt.printf(" SP")
 		}
 	}
 	if size == 2 {
-		fmt.printf(" %02x", bytes[0])
+		c += fmt.printf(" %02x", memory[regs.PC+1])
 	} else if size == 3 {
-		fmt.printf(" %04x", cast(u16)transmute(u16le)bytes)
+		c += fmt.printf(" %02x, %02x", memory[regs.PC+1], memory[regs.PC+2])
 	}
-	when CPU_DIAG do fmt.printf("\tA=%02x, B=%02x, C=%02x, D=%02x, E=%02x, H=%02x, L=%02x, CY=%d, P=%d, S=%d, Z=%d, SP=%v\n", regs.A, regs.B, regs.C, regs.D, regs.E, regs.H, regs.L, u8(.CY in flags), u8(.P in flags), u8(.S in flags), u8(.Z in flags), regs.SP)
+	return c
 	
-	fmt.printf("\n")
+	// fmt.printf("\n")
+}
+
+print_registers :: proc(prev_length: int) {
+	for _ in 0..<50-prev_length {
+		fmt.printf(" ")
+	}
+	fmt.printf("A=%02x, B=%02x, C=%02x, D=%02x, E=%02x, H=%02x, L=%02x, CY=%d, P=%d, S=%d, Z=%d, SP=%04x\n", regs.A, regs.B, regs.C, regs.D, regs.E, regs.H, regs.L, u8(.CY in flags), u8(.P in flags), u8(.S in flags), u8(.Z in flags), regs.SP)
 }
 
 Mnemonic :: enum u8 {
@@ -704,12 +745,8 @@ Mnemonic :: enum u8 {
 
 Instruction :: struct {
 	mnemonic: Mnemonic,
-	dest: Register,
-	source: Register,
-	// TODO cycles: int,
 	size: u16,
-	bytes: [2]byte,
-	opdigits: u8,
+	// TODO cycles: int,
 }
 
 Register :: enum u8 {
