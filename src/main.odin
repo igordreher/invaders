@@ -6,10 +6,20 @@ import "core:testing"
 import "core:mem"
 import "core:time"
 import sdl "vendor:sdl2"
+import "core:prof/spall"
 
 CPU_DIAG :: #config(CPU_DIAG, ODIN_TEST)
 
+buf: spall.Buffer
+ctx: spall.Context
+
 main :: proc() {
+	ctx, _ = spall.context_create("prof.spall")
+	defer spall.context_destroy(&ctx)
+	buf_backing := make([]byte, spall.BUFFER_DEFAULT_SIZE)
+	buf, _ = spall.buffer_create(buf_backing)
+	defer spall.buffer_destroy(&ctx, &buf)
+	
 	when CPU_DIAG {
 		test_8080(nil)
 		return
@@ -21,7 +31,7 @@ main :: proc() {
 		fmt.eprintln("failed to create SDL window")
 		os.exit(1)
 	}
-	renderer := sdl.CreateRenderer(window, -1, {.SOFTWARE})
+	renderer := sdl.CreateRenderer(window, -1, {.ACCELERATED})
 	if renderer == nil {
 		fmt.eprintln("failed to create SDL renderer")
 		os.exit(1)
@@ -37,9 +47,14 @@ main :: proc() {
 	texture := sdl.CreateTexture(renderer, auto_cast sdl.PixelFormatEnum.RGB888, sdl.TextureAccess.STREAMING, WIDTH, HEIGHT)
 	sdl_assert_err()
 		
-	next_interrupt := time.now()._nsec + 16000
+	cpu_speed := 2e+6
+	refresh_rate := 60
+	cycles_per_interrupt := cpu_speed / refresh_rate / 2
+	next_interrupt := cycles_per_interrupt
 	game_loop: for cpu.regs.PC < size {
+		spall.SCOPED_EVENT(&ctx, &buf, "main_loop")
 		event: sdl.Event
+		spall._buffer_begin(&ctx, &buf, "poll_events")
 		for sdl.PollEvent(&event) {
 			#partial switch event.type {
 				case .QUIT: break game_loop
@@ -57,12 +72,18 @@ main :: proc() {
 					}
 			}
 		}
-			
-		if cpu.interrupt_enabled && time.now()._nsec > next_interrupt {
+		spall._buffer_end(&ctx, &buf)
+		
+		// if cpu.interrupt_enabled && time.now()._nsec > next_interrupt {
+		if cpu.interrupt_enabled && cpu.cycle_count > next_interrupt {
+			spall.SCOPED_EVENT(&ctx, &buf, "generate_interrupt")
+			// fmt.printf("%v %v\n", time.now()._nsec, next_interrupt)
+				
 			render_vram(vram, renderer, texture)
 			generate_interrupt(&cpu, which_interrupt)
 			which_interrupt = ((which_interrupt + 2) % 2) + 1
-			next_interrupt = time.now()._nsec + 8e+6
+			// next_interrupt = time.now()._nsec + 8e+6
+			next_interrupt += cycles_per_interrupt
 		}
 			
 		i8080_next_instruction(&cpu)
@@ -75,6 +96,7 @@ main :: proc() {
 which_interrupt: u16 = 1
 
 render_vram :: proc(vram: []byte, renderer: ^sdl.Renderer, texture: ^sdl.Texture) {
+	spall.SCOPED_EVENT(&ctx, &buf, #procedure)
 	sdl.SetRenderDrawColor(renderer, 255, 255, 0, 255)
 	sdl.RenderClear(renderer)
 

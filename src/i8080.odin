@@ -3,6 +3,7 @@ package main
 import "core:testing"
 import "core:fmt"
 import "core:os"
+import "core:prof/spall"
 
 @(test)
 test_8080 :: proc(^testing.T) {
@@ -23,7 +24,7 @@ test_8080 :: proc(^testing.T) {
 	for regs.PC < auto_cast file_size {
 		instruction := decode_8080_instruction(cpu, regs.PC)
 		c := print_8080_instruction(cpu, instruction)
-		exec_8080_instruction(&cpu, instruction)
+		exec_8080_instruction(&cpu, &instruction)
 		print_registers(cpu, c)
 	}
 }
@@ -55,12 +56,15 @@ i8080_init :: proc(buffer: []byte) -> i8080_State {
 }
 
 i8080_next_instruction :: proc(state: ^i8080_State) {
+	spall.SCOPED_EVENT(&ctx, &buf, #procedure)
 	instruction := decode_8080_instruction(state^, state.regs.PC)
 	// print_8080_instruction(cpu, instruction); fmt.printf("\n")
-	exec_8080_instruction(state, instruction)
+	exec_8080_instruction(state, &instruction)
 }
 
-exec_8080_instruction :: proc(using state: ^i8080_State, using instruction: Instruction) {
+exec_8080_instruction :: proc(using state: ^i8080_State, using instruction: ^Instruction) {
+	spall.SCOPED_EVENT(&ctx, &buf, #procedure)
+	defer cycle_count += cycles
 	regs.PC += size
 	pc := regs.PC - size
 	opcode := memory[pc]
@@ -225,14 +229,22 @@ exec_8080_instruction :: proc(using state: ^i8080_State, using instruction: Inst
 		case .DAA:
 		{
 			if regs.A & 0xf > 9 {
-				regs.A += 6	
-				set_flag(state, .CY, regs.A < 6)
-			} 
-			if regs.A & 0xf0 > 0x90 || .CY in flags {
-				regs.A = regs.A + 0x60
+				regs.A += 6
+			}
+			if regs.A & 0xf0 > 0x90 {
+				regs.A += 0x60
+				set_flags(state, regs.A)
 				set_flag(state, .CY, regs.A < 0x60)
 			}
-			set_flags(state, regs.A)
+			// if regs.A & 0xf > 9 {
+			// 	regs.A += 6	
+			// 	set_flag(state, .CY, regs.A < 6)
+			// } 
+			// if regs.A & 0xf0 > 0x90 || .CY in flags {
+			// 	regs.A = regs.A + 0x60
+			// 	set_flag(state, .CY, regs.A < 0x60)
+			// }
+			// set_flags(state, regs.A)
 		}
 		// Logical group
 		case .ANA, .ANI:
@@ -324,6 +336,7 @@ exec_8080_instruction :: proc(using state: ^i8080_State, using instruction: Inst
 		case .CZ, .CNZ, .CC, .CNC, .CPE, .CPO, .CP, .CM:
 		{
 			if (Flag(u8(condition) & 0b110) in flags) == bool(u8(condition) & 0b001) {
+				cycles = 5
 				push(state, regs.PC)
 				regs.PC = word
 			}
@@ -336,6 +349,7 @@ exec_8080_instruction :: proc(using state: ^i8080_State, using instruction: Inst
 		case .RZ, .RNZ, .RC, .RNC, .RPE, .RPO, .RP, .RM:
 		{
 			if (Flag(u8(condition) & 0b110) in flags) == bool(u8(condition) & 0b001) {
+				cycles = 3
 				regs.PC = auto_cast (cast(^u16le)&memory[regs.SP])^
 				regs.SP += 2
 			}
@@ -449,6 +463,7 @@ write :: proc(using state: ^i8080_State, addr: u16, value: u8, location := #call
 }
 
 decode_8080_instruction :: proc(using state: i8080_State, pc: u16) -> Instruction {
+	spall.SCOPED_EVENT(&ctx, &buf, #procedure)
 	opcode := memory[pc]
 	dest := cast(Register)(opcode & 0b00_111_000 >> 3)
 	source := cast(Register)(opcode & 0b00_000_111)
@@ -457,83 +472,95 @@ decode_8080_instruction :: proc(using state: i8080_State, pc: u16) -> Instructio
 	
 	if opdigits == 0b01 { // MOV & HLT
 		if dest == .NULL && source == .NULL {
-			return Instruction{.HLT, 1}
+			return Instruction{.HLT, 1, 1}
 		}
-		return Instruction{.MOV, 1}
+		if source == .NULL || dest == .NULL {
+			return Instruction{.MOV, 1, 2}
+		}
+		return Instruction{.MOV, 1, 1}
 	}
 	
 	if opdigits == 0b00 && source == .NULL {
-		return Instruction{.MVI, 2}
+		cycles := dest == .NULL ? 3 : 2
+		return Instruction{.MVI, 2, cycles}
 	}
 	
 	if opdigits == 0b00 { // INR & DCR
+		cycles := dest == .NULL ? 3 : 1
 		if source == auto_cast 0b100 {
-			return Instruction{.INR, 1}
+			return Instruction{.INR, 1, cycles}
 		} else if source == auto_cast 0b101 {
-			return Instruction{.DCR, 1}
+			return Instruction{.DCR, 1, cycles}
 		}
 	}
 
 	if opdigits == 0b10 { // ADD & ADC
+		cycles := source == .NULL ? 2 : 1
 		if dest == auto_cast 0b000 {
-			return Instruction{.ADD, 1}
+			return Instruction{.ADD, 1, cycles}
 		} else if dest == auto_cast 0b001 {
-			return Instruction{.ADC, 1}
+			return Instruction{.ADC, 1, cycles}
 		}
 	}
 
 	if opdigits == 0b10 && dest == auto_cast 0b010 {
-		return Instruction{.SUB, 1}
+		cycles := source == .NULL ? 2 : 1
+		return Instruction{.SUB, 1, cycles}
 	}
 	
 	if opdigits == 0b10 && dest == auto_cast 0b011 {
-		return Instruction{.SBB, 1}
+		cycles := source == .NULL ? 2 : 1
+		return Instruction{.SBB, 1, cycles}
 	}
 	
 	if opdigits == 0b10 && dest == auto_cast 0b100 {
-		return Instruction{.ANA, 1}
+		cycles := source == .NULL ? 2 : 1
+		return Instruction{.ANA, 1, cycles}
 	}
 
 	if opdigits == 0b10 && dest == auto_cast 0b101 {
-		return Instruction{.XRA, 1}
+		cycles := source == .NULL ? 2 : 1
+		return Instruction{.XRA, 1, cycles}
 	}
 	
 	if opdigits == 0b10 && dest == auto_cast 0b110 {
-		return Instruction{.ORA, 1}
+		cycles := source == .NULL ? 2 : 1
+		return Instruction{.ORA, 1, cycles}
 	}
 	
 	if opdigits == 0b10 && dest == auto_cast 0b111 {
-		return Instruction{.CMP, 1}
+		cycles := source == .NULL ? 2 : 1
+		return Instruction{.CMP, 1, cycles}
 	}
 
 	if opdigits == 0b11 && source == auto_cast 0b010 { // Jcondition
 		mnemonic := Mnemonic(u8(Mnemonic.JMP)+1 + u8(dest))
-		return Instruction{mnemonic, 3}
+		return Instruction{mnemonic, 3, 3}
 	}
 	if opdigits == 0b11 && source == auto_cast 0b000 { // Rcondition
 		mnemonic := Mnemonic(u8(Mnemonic.RET)+1 + u8(dest))
-		return Instruction{mnemonic, 1}
+		return Instruction{mnemonic, 1, 1} // cycles = 1/3
 	}
 	if opdigits == 0b11 && source == auto_cast 0b100 { // Ccondition
 		mnemonic := Mnemonic(u8(Mnemonic.CALL)+1 + u8(dest))
-		return Instruction{mnemonic, 3}
+		return Instruction{mnemonic, 3, 3} // cycles = 3/5
 	}
 	
 	if opdigits == 0b11 && source == auto_cast 0b111 {
-		return Instruction{.RST, 1}
+		return Instruction{.RST, 1, 3}
 	}
 
 	if opdigits == 0b00 {
 		if u8(dest) & 1 == 1 {
 			if source == auto_cast 0b001 {
-				return Instruction{.DAD, 1}
+				return Instruction{.DAD, 1, 3}
 			}
 			if source == auto_cast 0b011 {
-				return Instruction{.DCX, 1}
+				return Instruction{.DCX, 1, 1}
 			}
 		} else {
 			if source == auto_cast 0b011 {
-				return Instruction{.INX, 1}
+				return Instruction{.INX, 1, 1}
 			}
 		}
 	}
@@ -541,64 +568,63 @@ decode_8080_instruction :: proc(using state: i8080_State, pc: u16) -> Instructio
 	
 	if opdigits == 0b11 && u8(dest) & 1 == 0 { // PUSH & POP
 		if source == auto_cast 0b101 {
-			return Instruction{.PUSH, 1}
+			return Instruction{.PUSH, 1, 3}
 		}
 		if source == auto_cast 0b001 {
-			return Instruction{.POP, 1}
+			return Instruction{.POP, 1, 3}
 		}
 	}
 
 	if opdigits == 0b00 && source == auto_cast 0b001 {
 		if u8(dest) & 1 == 0 {
-			return Instruction{.LXI, 3}
+			return Instruction{.LXI, 3, 3}
 		}
 	}
 
 	switch opcode {
-		case 0xc6: return Instruction{.ADI, 2}
-		case 0xce: return Instruction{.ACI, 2}
-		case 0xd6: return Instruction{.SUI, 2}
-		case 0xde: return Instruction{.SBI, 2}
-		case 0xe6: return Instruction{.ANI, 2}
-		case 0xee: return Instruction{.XRI, 2}
-		case 0xf6: return Instruction{.ORI, 2}
-		case 0xfe: return Instruction{.CPI, 2}
-		case 0x07: return Instruction{.RLC, 1}
-		case 0x0f: return Instruction{.RRC, 1}
-		case 0x17: return Instruction{.RAL, 1}
-		case 0x1f: return Instruction{.RAR, 1}
+		case 0xc6: return Instruction{.ADI, 2, 2}
+		case 0xce: return Instruction{.ACI, 2, 2}
+		case 0xd6: return Instruction{.SUI, 2, 2}
+		case 0xde: return Instruction{.SBI, 2, 2}
+		case 0xe6: return Instruction{.ANI, 2, 2}
+		case 0xee: return Instruction{.XRI, 2, 2}
+		case 0xf6: return Instruction{.ORI, 2, 2}
+		case 0xfe: return Instruction{.CPI, 2, 2}
+		case 0x07: return Instruction{.RLC, 1, 1}
+		case 0x0f: return Instruction{.RRC, 1, 1}
+		case 0x17: return Instruction{.RAL, 1, 1}
+		case 0x1f: return Instruction{.RAR, 1, 1}
 		
-		case 0xc3: return Instruction{.JMP, 3}
-		case 0xcd: return Instruction{.CALL, 3}
-		case 0xc9: return Instruction{.RET, 1}
+		case 0xc3: return Instruction{.JMP, 3, 3}
+		case 0xcd: return Instruction{.CALL, 3, 5}
+		case 0xc9: return Instruction{.RET, 1, 3}
 		
-		case 0xdb: return Instruction{.IN, 2}
-		case 0xd3: return Instruction{.OUT, 2}
+		case 0xdb: return Instruction{.IN, 2, 3}
+		case 0xd3: return Instruction{.OUT, 2, 3}
 		
-		case 0x32: return Instruction{.STA, 3}
-		case 0x3a: return Instruction{.LDA, 3}
+		case 0x32: return Instruction{.STA, 3, 4}
+		case 0x3a: return Instruction{.LDA, 3, 4}
 		
-		case 0xeb: return Instruction{.XCHG, 1}
-		case 0xe3: return Instruction{.XTHL, 1}
-		case 0xf9: return Instruction{.SPHL, 1}
-		case 0xe9: return Instruction{.PCHL, 1}
+		case 0xeb: return Instruction{.XCHG, 1, 1}
+		case 0xe3: return Instruction{.XTHL, 1, 5}
+		case 0xf9: return Instruction{.SPHL, 1, 1}
+		case 0xe9: return Instruction{.PCHL, 1, 1}
 		
-		case 0x02, 0x12: return Instruction{.STAX, 1}
-		case 0x0a, 0x1a: return Instruction{.LDAX, 1}
+		case 0x02, 0x12: return Instruction{.STAX, 1, 2}
+		case 0x0a, 0x1a: return Instruction{.LDAX, 1, 2}
 		
-		case 0x2f: return Instruction{.CMA, 1}
-		case 0x37: return Instruction{.STC, 1}
-		case 0x3f: return Instruction{.CMC, 1}
-		case 0x27: return Instruction{.DAA, 1}
-		case 0x22: return Instruction{.SHLD, 3}
-		case 0x2a: return Instruction{.LHLD, 3}
-		case 0xfb: return Instruction{.EI, 1}
-		case 0xf3: return Instruction{.DI, 1}
+		case 0x2f: return Instruction{.CMA, 1, 1}
+		case 0x37: return Instruction{.STC, 1, 1}
+		case 0x3f: return Instruction{.CMC, 1, 1}
+		case 0x27: return Instruction{.DAA, 1, 1}
+		case 0x22: return Instruction{.SHLD, 3, 5}
+		case 0x2a: return Instruction{.LHLD, 3, 5}
+		case 0xfb: return Instruction{.EI, 1, 1}
+		case 0xf3: return Instruction{.DI, 1, 1}
 
 		case: 
-			return Instruction{.NOP, 1}
+			return Instruction{.NOP, 1, 1}
 	}
-	fmt.panicf("instruction not implemented: 0x%02x\n", opcode)	
 }
 
 set_flags :: proc(using state: ^i8080_State, v: u8) {
@@ -788,7 +814,7 @@ Mnemonic :: enum u8 {
 Instruction :: struct {
 	mnemonic: Mnemonic,
 	size: u16,
-	// TODO cycles: int,
+	cycles: int,
 }
 
 Register :: enum u8 {
@@ -849,6 +875,7 @@ i8080_State :: struct {
 	interrupt_enabled: bool,
 	flags: bit_set[Flag],
 	memory: [max(u16)]byte,
+	cycle_count: int,
 	ports: [16]u8,
 }
 
