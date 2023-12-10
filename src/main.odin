@@ -49,6 +49,7 @@ main :: proc() {
 	sdl_assert_err()
 		
 	last_interrupt := time.now()
+	next_interrupt := time.now()._nsec + 16000
 	game_loop: for regs.PC < auto_cast size {
 		event: sdl.Event
 		for sdl.PollEvent(&event) {
@@ -56,37 +57,44 @@ main :: proc() {
 				case .QUIT: break game_loop
 				case .KEYDOWN:
 					#partial switch event.key.keysym.sym {
-						case .LEFT: ports[1] |= 0x20
+						case .LEFT: ports[1] |= 0x20 // 0b0010_0000
 						case .RIGHT: ports[1] |= 0x40
+						case .RETURN: ports[1] |= 0x04
 					}
+					fmt.println(ports)
 				case .KEYUP:
 					#partial switch event.key.keysym.sym {
 						case .LEFT: ports[1] &= 0xDF
 						case .RIGHT: ports[1] &= 0xBF
+						case .RETURN: ports[1] &= 0b1111_1011
 					}
+					fmt.println(ports)
 			}
 		}
-
+			
+		if interrupt_enabled && time.now()._nsec > next_interrupt {
+			render_vram(renderer, texture)
+			generate_interrupt(which_interrupt)
+			which_interrupt = ((which_interrupt + 2) % 2) + 1
+			next_interrupt = time.now()._nsec + 8e+6
+			// next_interrupt = time.now()._nsec + 6e+10
+		}
+			
 		instruction := decode_8080_instruction(memory[:size], regs.PC)
 		// print_8080_instruction(instruction); fmt.printf("\n")
 		regs.PC += instruction.size
-		if instruction.mnemonic == .IN {
-			regs.A = ports[memory[regs.PC-instruction.size+1]]
-			// machine_in(ports[memory[regs.PC-instruction.size+1]])
-		} else if instruction.mnemonic == .OUT {
-			ports[memory[regs.PC-instruction.size+1]] = regs.A
-			// machine_out(ports[memory[regs.PC-instruction.size+1]])
-		} else {
-			exec_8080_instruction(instruction)
-		}
-			
-		if time.duration_seconds(time.since(last_interrupt)) > 1/60 {
-			if interrupt_system {
-				render_vram(renderer, texture)
-				last_interrupt = time.now()
-			}
+		exec_8080_instruction(instruction)
+		if regs.SP != 0 && regs.SP <= 0x2300 {
+			fmt.printf("stack pointer is getting low %04x", regs.SP)
 		}
 	}
+}
+
+which_interrupt: u16 = 1
+generate_interrupt :: proc(num: u16) {
+	push(regs.PC)
+	regs.PC = 8 * num
+	interrupt_enabled = false
 }
 
 render_vram :: proc(renderer: ^sdl.Renderer, texture: ^sdl.Texture) {
@@ -222,7 +230,7 @@ exec_8080_instruction :: proc(instruction: Instruction) {
 		}
 		case .STA:
 		{
-			memory[word] = regs.A
+			write(word, regs.A)
 		}
 		case .LHLD:
 		{
@@ -231,8 +239,8 @@ exec_8080_instruction :: proc(instruction: Instruction) {
 		}
 		case .SHLD:
 		{
-			memory[word] = regs.L
-			memory[word+1] = regs.H
+			write(word, regs.L)
+			write(word+1, regs.H)
 		}
 		case .LDAX:
 		{
@@ -240,7 +248,7 @@ exec_8080_instruction :: proc(instruction: Instruction) {
 		}
 		case .STAX:
 		{
-			memory[addr_pair] = regs.A
+			write(addr_pair, regs.A)
 		}
 		case .XCHG:
 		{
@@ -327,8 +335,15 @@ exec_8080_instruction :: proc(instruction: Instruction) {
 		}
 		case .DAA:
 		{
-			fmt.eprintln("\nunimplemented instruction: DAA")
-			os.exit(1)
+			if regs.A & 0xf > 9 {
+				regs.A += 6	
+				set_flag(.CY, regs.A < 6)
+			} 
+			if regs.A & 0xf0 > 0x90 || .CY in flags {
+				regs.A = regs.A + 0x60
+				set_flag(.CY, regs.A < 0x60)
+			}
+			set_flags(regs.A)
 		}
 		// Logical group
 		case .ANA, .ANI:
@@ -414,18 +429,13 @@ exec_8080_instruction :: proc(instruction: Instruction) {
 		}
 		case .CALL:
 		{
-			memory[regs.SP-1] = u8(regs.PC>>8)
-			memory[regs.SP-2] = u8(regs.PC)
-			regs.SP -= 2
+			push(regs.PC)
 			regs.PC = word
 		}
 		case .CZ, .CNZ, .CC, .CNC, .CPE, .CPO, .CP, .CM:
 		{
 			if (Flag(u8(condition) & 0b110) in flags) == bool(u8(condition) & 0b001) {
-				memory[regs.SP-1] = u8(regs.PC >> 8)
-				memory[regs.SP-2] = u8(regs.PC)
-				// (^u16)(&memory[regs.SP-2])^ = regs.PC 
-				regs.SP -= 2
+				push(regs.PC)
 				regs.PC = word
 			}
 		}
@@ -443,9 +453,7 @@ exec_8080_instruction :: proc(instruction: Instruction) {
 		}
 		case .RST:
 		{
-			memory[regs.SP-1] = u8(regs.PC >> 8)
-			memory[regs.SP-2] = u8(regs.PC & 0x0f)
-			regs.SP -= 2
+			push(regs.PC)
 			regs.PC = 8 * u16(dest)
 		}
 		case .PCHL:
@@ -458,13 +466,10 @@ exec_8080_instruction :: proc(instruction: Instruction) {
 			if pair == .SP {
 				// |S|Z|0|AC|0|P|1|CY|
 				status_word := u8(.S in flags) << 7 | u8(.Z in flags) << 6 | u8(.P in flags) << 2 | 0b10 | u8(.CY in flags)
-				memory[regs.SP-1] = regs.A
-				memory[regs.SP-2] = status_word
+				push(regs.A, status_word)
 			} else {
-				memory[regs.SP-1] = regs.p[pair].H 
-				memory[regs.SP-2] = regs.p[pair].L 
+				push(regs.p[pair])
 			}
-			regs.SP -= 2
 		}
 		case .POP:
 		{
@@ -486,20 +491,24 @@ exec_8080_instruction :: proc(instruction: Instruction) {
 			pair := regs.HL
 			regs.L = memory[regs.SP]
 			regs.H = memory[regs.SP+1]
-			memory[regs.SP] = pair.L
-			memory[regs.SP+1] = pair.H
+			write(regs.SP, pair.L)
+			write(regs.SP+1, pair.H)
 		}
 		case .SPHL:
 		{
 			regs.SP = cast(u16)regs.HL.v
 		}
-		case .IN, .OUT: 
+		case .IN:
 		{
-			// do nothing for now
+			regs.A = ports[bytes[0]]
+		}
+		case .OUT: 
+		{
+			ports[bytes[0]] = regs.A
 		}
 		case .EI, .DI:
 		{
-			interrupt_system = mnemonic == .EI
+			interrupt_enabled = mnemonic == .EI
 		}
 		case .HLT:
 		{
@@ -507,6 +516,41 @@ exec_8080_instruction :: proc(instruction: Instruction) {
 			os.exit(0)
 		}
 	}
+}
+
+push :: proc{push_hl, push_u16, push_pair}
+push_pair :: proc(pair: Pair, location := #caller_location) {
+	push_hl(pair.H, pair.L, location)
+}
+push_u16 :: proc(v: u16, location := #caller_location) {
+	v := cast(u16le)v
+	high := u8((v & 0xff00)>>8)
+	low := u8(v & 0xff)
+	push_hl(high, low, location)
+}
+push_hl :: proc(high, low: u8, location := #caller_location) {
+	write(regs.SP-1, high, location)
+	write(regs.SP-2, low, location)
+	regs.SP -= 2
+}
+
+write :: proc(addr: u16, value: u8, location := #caller_location) {
+	if addr < 0 || addr >= len(memory) {
+		fmt.printf("Out of bounds write to memory %04x\n", addr)
+		os.exit(1)
+	}
+		
+	if addr < 0x2000 && !CPU_DIAG {
+		fmt.printf("\n[%s:%s][%d:%d] Writing to ROM not allowed %04x\n", location.file_path, location.procedure, location.line, location.column, addr)
+		fmt.printf("%04x\n", regs.PC)
+		return
+	} else if addr >= 0x4000 && !CPU_DIAG {
+		fmt.printf("\n[%s:%s][%d:%d] Writing out of Space Invaders RAM not allowed %x\n", location.file_path, location.procedure, location.line, location.column, addr)
+		fmt.printf("%04x\n", regs.PC)
+		return
+    }
+	
+	memory[addr] = value
 }
 
 decode_8080_instruction :: proc(buffer: []byte, pc: u16) -> Instruction {
@@ -683,6 +727,11 @@ set_flag :: proc(flag: Flag, v: bool) {
 	}
 }
 
+print_8080 :: proc(addr: u16) {
+	instruction := decode_8080_instruction(memory[:], addr)
+	print_8080_instruction(instruction)
+}
+	
 print_8080_instruction :: proc(using instruction: Instruction) -> int {
 	// TODO: improve this
 	// opdigits
@@ -900,7 +949,7 @@ Flag :: enum u8 {
 	// AC, // NOTE: this flag is not used in space invaders
 }
 
-interrupt_system: bool
+interrupt_enabled: bool
 flags: bit_set[Flag]
 memory: [max(u16)]byte
 VRAM := memory[0x2400:0x4000]
