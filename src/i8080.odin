@@ -16,14 +16,9 @@ test_8080 :: proc(^testing.T) {
     // Fix the first instruction to be JMP 0x100    
 	regs.PC = 0x100
 
-    //Skip DAA test    
-    memory[0x59c] = 0xc3 //JMP
-    memory[0x59d] = 0xc2
-    memory[0x59e] = 0x05
-	
 	for regs.PC < auto_cast file_size {
 		instruction := decode_8080_instruction(cpu, regs.PC)
-		c := print_8080_instruction(cpu, instruction)
+		c := print_8080_instruction(cpu, instruction, regs.PC)
 		exec_8080_instruction(&cpu, &instruction)
 		print_registers(cpu, c)
 	}
@@ -65,15 +60,15 @@ i8080_next_instruction :: proc(state: ^i8080_State) {
 exec_8080_instruction :: proc(using state: ^i8080_State, using instruction: ^Instruction) {
 	spall.SCOPED_EVENT(&ctx, &buf, #procedure)
 	defer cycle_count += cycles
+	pc := regs.PC
 	regs.PC += size
-	pc := regs.PC - size
 	opcode := memory[pc]
 	dest := cast(Register)(opcode & 0b00_111_000 >> 3)
 	source := cast(Register)(opcode & 0b00_000_111)
 	pair := Register_Pair(u8(dest) >> 1)
 	addr_hl := cast(u16)regs.HL.v
 	bytes: [2]byte
-	for i in 0..<instruction.size-1 {
+	for i in 0..<size-1 {
 		bytes[i] = memory[pc+1+i]
 	}
 	word :=	cast(u16) transmute(u16le)bytes
@@ -155,12 +150,14 @@ exec_8080_instruction :: proc(using state: ^i8080_State, using instruction: ^Ins
 			value := source == .NULL ? memory[addr_hl] : regs.r[source]
 			regs.A += value
 			set_flags(state, regs.A)
+			set_flag(state, .AC, regs.A & 0xf < value & 0xf)
 			set_flag(state, .CY, regs.A < value)
 		}
 		case .ADI:
 		{
 			regs.A += bytes[0]
 			set_flags(state, regs.A)
+			set_flag(state, .AC, regs.A & 0xf < bytes[0] & 0xf)
 			set_flag(state, .CY, regs.A < bytes[0])
 		}
 		case .ADC:
@@ -168,24 +165,28 @@ exec_8080_instruction :: proc(using state: ^i8080_State, using instruction: ^Ins
 			value := source == .NULL ? memory[addr_hl] : regs.r[source]
 			regs.A += value + u8(.CY in flags)
 			set_flags(state, regs.A)
+			set_flag(state, .AC, regs.A & 0xf < value & 0xf)
 			set_flag(state, .CY, regs.A < value)
 		}
 		case .ACI:
 		{
 			regs.A += bytes[0] + u8(.CY in flags)
 			set_flags(state, regs.A)
+			set_flag(state, .AC, regs.A & 0xf < bytes[0] & 0xf)
 			set_flag(state, .CY, regs.A < bytes[0])
 		}
 		case .SUB:
 		{
 			value := source == .NULL ? memory[addr_hl] : regs.r[source]
 			set_flag(state, .CY, regs.A < value)
+			set_flag(state, .AC, regs.A & 0xf < value & 0xf)
 			regs.A -= value
 			set_flags(state, regs.A)
 		}
 		case .SUI:
 		{
 			set_flag(state, .CY, regs.A < bytes[0])
+			set_flag(state, .AC, regs.A & 0xf < bytes[0] & 0xf)
 			regs.A -= bytes[0]
 			set_flags(state, regs.A)
 		}
@@ -196,6 +197,7 @@ exec_8080_instruction :: proc(using state: ^i8080_State, using instruction: ^Ins
 			regs.A = regs.A - value - u8(.CY in flags)
 			set_flags(state, regs.A)
 			set_flag(state, .CY, a < regs.A)
+			set_flag(state, .AC, a & 0xf < regs.A & 0xf)
 		}
 		case .SBI:
 		{
@@ -203,11 +205,13 @@ exec_8080_instruction :: proc(using state: ^i8080_State, using instruction: ^Ins
 			regs.A = regs.A - bytes[0] - u8(.CY in flags)
 			set_flags(state, regs.A)
 			set_flag(state, .CY, a < regs.A)
+			set_flag(state, .AC, a & 0xf < regs.A & 0xf)
 		}
 		case .INR, .DCR:
 		{
 			target := dest == .NULL ? &memory[addr_hl] : &regs.r[dest]
 			target^ = mnemonic == .INR ? target^ + 1 : target^ - 1
+			set_flag(state, .AC, target^ & 0xf < (target^+1) & 0xf)
 			set_flags(state, target^)
 		}
 		case .INX, .DCX:
@@ -228,14 +232,16 @@ exec_8080_instruction :: proc(using state: ^i8080_State, using instruction: ^Ins
 		}
 		case .DAA:
 		{
-			if regs.A & 0xf > 9 {
+			a := regs.A
+			if .AC in flags || regs.A & 0xf > 9 {
 				regs.A += 6
 			}
-			if regs.A & 0xf0 > 0x90 {
+			if .CY in flags || regs.A & 0xf0 > 0x90 {
 				regs.A += 0x60
-				set_flags(state, regs.A)
-				set_flag(state, .CY, regs.A < 0x60)
 			}
+			set_flags(state, regs.A)
+			set_flag(state, .AC, regs.A & 0xf < a & 0xf)
+			set_flag(state, .CY, regs.A < a)
 			// if regs.A & 0xf > 9 {
 			// 	regs.A += 6	
 			// 	set_flag(state, .CY, regs.A < 6)
@@ -253,6 +259,7 @@ exec_8080_instruction :: proc(using state: ^i8080_State, using instruction: ^Ins
 			if mnemonic == .ANI do value = bytes[0]
 			regs.A = regs.A & value
 			set_flags(state, regs.A)
+			set_flag(state, .AC, regs.A & 0xf < value & 0xf)
 			set_flag(state, .CY, false)
 		}
 		case .XRA, .XRI:
@@ -261,6 +268,7 @@ exec_8080_instruction :: proc(using state: ^i8080_State, using instruction: ^Ins
 			if mnemonic == .XRI do value = bytes[0]
 			regs.A = regs.A ~ value
 			set_flags(state, regs.A)
+			set_flag(state, .AC, false)
 			set_flag(state, .CY, false)
 		}
 		case .ORA, .ORI:
@@ -269,6 +277,7 @@ exec_8080_instruction :: proc(using state: ^i8080_State, using instruction: ^Ins
 			if mnemonic == .ORI do value = bytes[0]
 			regs.A = regs.A | value
 			set_flags(state, regs.A)
+			set_flag(state, .AC, false)
 			set_flag(state, .CY, false)
 		}
 		case .CMP, .CPI:
@@ -278,6 +287,7 @@ exec_8080_instruction :: proc(using state: ^i8080_State, using instruction: ^Ins
 			else if source == .NULL do value = memory[addr_hl]
 			else do value = regs.r[source]
 			set_flag(state, .CY, regs.A < value)
+			set_flag(state, .AC, regs.A & 0xf < value & 0xf)
 			result := regs.A - value
 			set_flags(state, result)
 		}
@@ -420,7 +430,7 @@ exec_8080_instruction :: proc(using state: ^i8080_State, using instruction: ^Ins
 		}
 	}
 }
-	
+
 generate_interrupt :: proc(cpu: ^i8080_State, num: u16) {
 	push(cpu, cpu.regs.PC)
 	cpu.regs.PC = 8 * num
@@ -647,19 +657,17 @@ set_flag :: proc(using state: ^i8080_State, flag: Flag, v: bool) {
 	}
 }
 
-print_8080 :: proc(state: i8080_State, addr: u16) {
+print_8080 :: proc(state: i8080_State, addr: u16) -> int {
 	instruction := decode_8080_instruction(state, addr)
-	print_8080_instruction(state, instruction)
+	return print_8080_instruction(state, instruction, addr)
 }
 	
-print_8080_instruction :: proc(using state: i8080_State, using instruction: Instruction) -> int {
-	// TODO: improve this
-	// opdigits
-	opcode := memory[regs.PC]
+print_8080_instruction :: proc(using state: i8080_State, using instruction: Instruction, pc: u16) -> int {
+	opcode := memory[pc]
 	dest := cast(Register)(opcode & 0b00_111_000 >> 3)
 	source := cast(Register)(opcode & 0b00_000_111)
 	pair := Register_Pair(u8(dest) >> 1)
-	c := fmt.printf("%04x %02x %s", regs.PC, opcode, mnemonic)
+	c := fmt.printf("%04x %02x %s", pc, opcode, mnemonic)
 	#partial switch mnemonic {
 		case .ADD, .SBB, .ADC, .SUB, .CMP, .ORA, .XRA, .ANA: 
 		{
@@ -696,13 +704,11 @@ print_8080_instruction :: proc(using state: i8080_State, using instruction: Inst
 		return fmt.printf(" %v", pair)
 	}
 	if size == 2 {
-		c += fmt.printf(" %02x", memory[regs.PC+1])
+		c += fmt.printf(" %02x", memory[pc+1])
 	} else if size == 3 {
-		c += fmt.printf(" %04x", transmute(u16le)[2]byte{memory[regs.PC+1], memory[regs.PC+2]})
+		c += fmt.printf(" %04x", transmute(u16le)[2]byte{memory[pc+1], memory[pc+2]})
 	}
 	return c
-	
-	// fmt.printf("\n")
 }
 
 print_registers :: proc(using state: i8080_State, prev_length: int) {
@@ -710,20 +716,7 @@ print_registers :: proc(using state: i8080_State, prev_length: int) {
 		fmt.printf(" ")
 	}
 	fmt.printf("A=%02x, B=%02x, C=%02x, D=%02x, E=%02x, H=%02x, L=%02x, CY=%d, P=%d, S=%d, Z=%d, SP=%04x", regs.A, regs.B, regs.C, regs.D, regs.E, regs.H, regs.L, u8(.CY in flags), u8(.P in flags), u8(.S in flags), u8(.Z in flags), regs.SP)
-	fmt.printf(";")
-	for addr in 0x06a4..<0x06ab {
-		fmt.printf("  %04x=%02x", addr, memory[addr])
-	}
 	fmt.printf("\n")
-	// 06A4	A6 06           TEMPP:	DW	TEMP0	;POINTER USED TO TEST "LHLD","SHLD",
-	// 	                			; AND "LDAX" INSTRUCTIONS
-	// 	                ;
-	// 06A6	00              TEMP0:	DS	1	;TEMPORARY STORAGE FOR CPU TEST MEMORY LOCATIONS
-	// 06A7	00              TEMP1:	DS	1	;TEMPORARY STORAGE FOR CPU TEST MEMORY LOCATIONS
-	// 06A8	00              TEMP2	DS	1	;TEMPORARY STORAGE FOR CPU TEST MEMORY LOCATIONS
-	// 06A9	00              TEMP3:	DS	1	;TEMPORARY STORAGE FOR CPU TEST MEMORY LOCATIONS
-	// 06AA	00              TEMP4:	DS	1	;TEMPORARY STORAGE FOR CPU TEST MEMORY LOCATIONS
-	// 06AB
 }
 
 Mnemonic :: enum u8 {
@@ -857,7 +850,7 @@ Flag :: enum u8 {
 	CY = 0b010,
 	P  = 0b100, 
 	S  = 0b110, 
-	// AC, // NOTE: this flag is not used in space invaders
+	AC, // NOTE: this flag is not used in space invaders
 }
 
 Registers :: struct {
