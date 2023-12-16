@@ -24,7 +24,7 @@ test_8080 :: proc(^testing.T) {
 	}
 }
 
-i8080_init_from_filename :: proc(filename: string) -> (state: i8080_State, size: u16) {
+i8080_init_from_filename :: proc(filename: string, port_in := def_port_in, port_out := def_port_out) -> (state: i8080_State, size: u16) {
 	// TODO: return errors instead of panic
 	h, err := os.open(filename)
 	if err != 0 {
@@ -39,14 +39,20 @@ i8080_init_from_filename :: proc(filename: string) -> (state: i8080_State, size:
 	if rerr != 0 {
 		fmt.printf("failed to read file '%s'\n", filename)
 	}
+	state.interrupt_delay = -1
+	state.port_in = port_in
+	state.port_out = port_out
 	return state, size
 }
 
-i8080_init :: proc(buffer: []byte) -> i8080_State {
+i8080_init :: proc(buffer: []byte, port_in := def_port_in, port_out := def_port_out) -> i8080_State {
 	// TODO: return errors instead of panic
 	state: i8080_State
 	assert(len(buffer) <= len(state.memory))
 	copy(state.memory[:], buffer)
+	state.interrupt_delay = -1
+	state.port_in = port_in
+	state.port_out = port_out
 	return state
 }
 
@@ -60,6 +66,11 @@ i8080_next_instruction :: proc(state: ^i8080_State) {
 exec_8080_instruction :: proc(using state: ^i8080_State, using instruction: ^Instruction) {
 	spall.SCOPED_EVENT(&ctx, &buf, #procedure)
 	defer cycle_count += cycles
+	if interrupt_delay == 0 {
+		interrupt_delay -= 1
+		interrupt_enabled = true
+	}
+	if interrupt_delay > 0 do interrupt_delay -= 1
 	pc := regs.PC
 	regs.PC += size
 	opcode := memory[pc]
@@ -413,15 +424,19 @@ exec_8080_instruction :: proc(using state: ^i8080_State, using instruction: ^Ins
 		}
 		case .IN:
 		{
-			regs.A = ports[bytes[0]]
+			regs.A = port_in(state, bytes[0])
 		}
 		case .OUT: 
 		{
-			ports[bytes[0]] = regs.A
+			port_out(state, bytes[0], regs.A)
 		}
-		case .EI, .DI:
+		case .DI:
 		{
-			interrupt_enabled = mnemonic == .EI
+			interrupt_enabled = false
+		}
+		case .EI:
+		{
+			interrupt_delay = 1
 		}
 		case .HLT:
 		{
@@ -866,9 +881,19 @@ Registers :: struct {
 i8080_State :: struct {
 	regs: Registers,
 	interrupt_enabled: bool,
+	interrupt_delay: i8,
 	flags: bit_set[Flag],
 	memory: [max(u16)]byte,
 	cycle_count: int,
 	ports: [16]u8,
+	port_in: proc(state: ^i8080_State, port: u8) -> u8,
+	port_out: proc(state: ^i8080_State, port: u8, value: u8),
+}
+
+def_port_in :: proc(state: ^i8080_State, port: u8) -> u8 {
+	return state.ports[port]
+}
+def_port_out :: proc(state: ^i8080_State, port, value: u8) {
+	state.ports[port] = value
 }
 

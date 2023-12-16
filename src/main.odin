@@ -24,6 +24,10 @@ main :: proc() {
 		test_8080(nil)
 		return
 	}
+		
+	rom := #load("../invaders")
+	cpu := i8080_init(rom, port_in, port_out)
+	vram := cpu.memory[0x2400:0x4000]
 
 	sdl.Init({.VIDEO})
 	window := sdl.CreateWindow("Space Invaders", sdl.WINDOWPOS_CENTERED, sdl.WINDOWPOS_CENTERED, WIDTH, HEIGHT, {})
@@ -36,13 +40,6 @@ main :: proc() {
 		fmt.eprintln("failed to create SDL renderer")
 		os.exit(1)
 	}
-
-	if len(os.args) < 2 {
-		fmt.panicf("not enough arguments\n")
-	}
-	
-	cpu, size := i8080_init_from_filename(os.args[1])
-	vram := cpu.memory[0x2400:0x4000]
 	
 	texture := sdl.CreateTexture(renderer, auto_cast sdl.PixelFormatEnum.RGB888, sdl.TextureAccess.STREAMING, WIDTH, HEIGHT)
 	sdl_assert_err()
@@ -51,7 +48,7 @@ main :: proc() {
 	refresh_rate := 60
 	cycles_per_interrupt := cpu_speed / refresh_rate / 2
 	next_interrupt := cycles_per_interrupt
-	game_loop: for cpu.regs.PC < size {
+	game_loop: for cpu.regs.PC < auto_cast len(rom) {
 		spall.SCOPED_EVENT(&ctx, &buf, "main_loop")
 		event: sdl.Event
 		spall._buffer_begin(&ctx, &buf, "poll_events")
@@ -74,15 +71,11 @@ main :: proc() {
 		}
 		spall._buffer_end(&ctx, &buf)
 		
-		// if cpu.interrupt_enabled && time.now()._nsec > next_interrupt {
 		if cpu.interrupt_enabled && cpu.cycle_count > next_interrupt {
 			spall.SCOPED_EVENT(&ctx, &buf, "generate_interrupt")
-			// fmt.printf("%v %v\n", time.now()._nsec, next_interrupt)
-				
 			render_vram(vram, renderer, texture)
 			generate_interrupt(&cpu, which_interrupt)
 			which_interrupt = ((which_interrupt + 2) % 2) + 1
-			// next_interrupt = time.now()._nsec + 8e+6
 			next_interrupt += cycles_per_interrupt
 		}
 			
@@ -94,6 +87,33 @@ main :: proc() {
 }
 
 which_interrupt: u16 = 1
+
+shift0, shift1, shift_offset: u8
+port_in :: proc(state: ^i8080_State, port: u8) -> u8 {
+    switch(port)
+    {
+        case 0: return 1
+        case 1: return state.ports[1]
+        case 3:
+        {
+            v := u16(shift1)<<8 | u16(shift0);
+            return u8((v >> (8-shift_offset)) & 0xff);
+        }
+		case: return 0
+    }
+}
+port_out :: proc(state: ^i8080_State, port: u8, value: u8) {
+    switch(port)
+    {
+        case 2:
+            shift_offset = value & 0x7;
+            break;
+        case 4:
+            shift0 = shift1;
+            shift1 = value;
+            break;
+    }
+}
 
 render_vram :: proc(vram: []byte, renderer: ^sdl.Renderer, texture: ^sdl.Texture) {
 	spall.SCOPED_EVENT(&ctx, &buf, #procedure)
