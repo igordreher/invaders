@@ -55,18 +55,16 @@ main :: proc() {
 		for sdl.PollEvent(&event) {
 			#partial switch event.type {
 				case .QUIT: break game_loop
-				case .KEYDOWN:
+				case .KEYDOWN, .KEYUP:
+				{
 					#partial switch event.key.keysym.sym {
-						case .LEFT: cpu.ports[1] |= 0x20 // 0b0010_0000
-						case .RIGHT: cpu.ports[1] |= 0x40
-						case .RETURN: cpu.ports[1] |= 0x04
+						case .RETURN: toggle_bit(&cpu.ports[1], 0, event.key.state == 1)
+						case .LEFT: toggle_bit(&cpu.ports[1], 5, event.key.state == 1)
+						case .RIGHT: toggle_bit(&cpu.ports[1], 6, event.key.state == 1)
+						case .X: toggle_bit(&cpu.ports[1], 4, event.key.state == 1)
+						case .NUM1: toggle_bit(&cpu.ports[1], 2, event.key.state == 1)
 					}
-				case .KEYUP:
-					#partial switch event.key.keysym.sym {
-						case .LEFT: cpu.ports[1] &= 0xDF
-						case .RIGHT: cpu.ports[1] &= 0xBF
-						case .RETURN: cpu.ports[1] &= 0b1111_1011
-					}
+				}
 			}
 		}
 		spall._buffer_end(&ctx, &buf)
@@ -86,32 +84,38 @@ main :: proc() {
 	}
 }
 
+toggle_bit :: proc(v: ^u8, bit: u8, state: bool) {
+	if state {
+		v^ |= 1 << bit
+	} else {
+		v^ &= 0xff ~ (1 << bit)
+	}
+}
+
 which_interrupt: u16 = 1
 
 shift0, shift1, shift_offset: u8
 port_in :: proc(state: ^i8080_State, port: u8) -> u8 {
     switch(port)
     {
-        case 0: return 1
-        case 1: return state.ports[1]
         case 3:
         {
-            v := u16(shift1)<<8 | u16(shift0);
-            return u8((v >> (8-shift_offset)) & 0xff);
+            v := u16(shift1)<<8 | u16(shift0)
+            return u8((v >> (8-shift_offset)) & 0xff)
         }
-		case: return 0
+		case: return state.ports[port]
     }
 }
 port_out :: proc(state: ^i8080_State, port: u8, value: u8) {
     switch(port)
     {
-        case 2:
-            shift_offset = value & 0x7;
-            break;
+        case 2: shift_offset = value & 0x7
         case 4:
-            shift0 = shift1;
-            shift1 = value;
-            break;
+		{
+            shift0 = shift1
+            shift1 = value
+		}
+		case: state.ports[port] = value
     }
 }
 
