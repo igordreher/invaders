@@ -3,7 +3,6 @@ package main
 import "core:testing"
 import "core:fmt"
 import "core:os"
-import "core:prof/spall"
 
 @(test)
 test_8080 :: proc(^testing.T) {
@@ -57,14 +56,14 @@ i8080_init :: proc(buffer: []byte, port_in := def_port_in, port_out := def_port_
 }
 
 i8080_next_instruction :: proc(state: ^i8080_State) {
-	spall.SCOPED_EVENT(&ctx, &buf, #procedure)
+	profile_scope(#procedure)
 	instruction := decode_8080_instruction(state^, state.regs.PC)
 	// print_8080_instruction(cpu, instruction); fmt.printf("\n")
 	exec_8080_instruction(state, &instruction)
 }
 
 exec_8080_instruction :: proc(using state: ^i8080_State, using instruction: ^Instruction) {
-	spall.SCOPED_EVENT(&ctx, &buf, #procedure)
+	profile_scope(#procedure)
 	defer cycle_count += cycles
 	if interrupt_delay == 0 {
 		interrupt_delay -= 1
@@ -488,7 +487,7 @@ write :: proc(using state: ^i8080_State, addr: u16, value: u8, location := #call
 }
 
 decode_8080_instruction :: proc(using state: i8080_State, pc: u16) -> Instruction {
-	spall.SCOPED_EVENT(&ctx, &buf, #procedure)
+	profile_scope(#procedure)
 	opcode := memory[pc]
 	dest := cast(Register)(opcode & 0b00_111_000 >> 3)
 	source := cast(Register)(opcode & 0b00_000_111)
