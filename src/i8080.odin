@@ -3,22 +3,23 @@ package main
 import "core:testing"
 import "core:fmt"
 import "core:os"
+import "core:prof/spall"
 
 @(test)
 test_8080 :: proc(^testing.T) {
 	file := #load("../cpudiag.bin")
 	cpu := i8080_init({})
-	using cpu
-	copy(memory[0x100:], file)
+	copy(cpu.memory[0x100:], file)
 	file_size := len(file) + 0x100
 	
     // Fix the first instruction to be JMP 0x100    
-	regs.PC = 0x100
+	cpu.regs.PC = 0x100
 
-	for regs.PC < auto_cast file_size {
-		instruction := decode_8080_instruction(cpu, regs.PC)
-		c := print_8080_instruction(cpu, instruction, regs.PC)
-		exec_8080_instruction(&cpu, &instruction)
+	for cpu.regs.PC < auto_cast file_size {
+		profile_scope("loop_iteration")
+		c := print_8080_instruction(cpu, cpu.regs.PC)
+		next := i8080_next_instruction(&cpu)
+		if !next do break
 		print_registers(cpu, c)
 	}
 }
@@ -55,24 +56,21 @@ i8080_init :: proc(buffer: []byte, port_in := def_port_in, port_out := def_port_
 	return state
 }
 
-i8080_next_instruction :: proc(state: ^i8080_State) {
-	profile_scope(#procedure)
-	instruction := decode_8080_instruction(state^, state.regs.PC)
-	// print_8080_instruction(cpu, instruction); fmt.printf("\n")
-	exec_8080_instruction(state, &instruction)
-}
 
-exec_8080_instruction :: proc(using state: ^i8080_State, using instruction: ^Instruction) {
+i8080_next_instruction :: proc(using state: ^i8080_State) -> bool {
 	profile_scope(#procedure)
-	defer cycle_count += cycles
 	if interrupt_delay == 0 {
 		interrupt_delay -= 1
 		interrupt_enabled = true
 	}
 	if interrupt_delay > 0 do interrupt_delay -= 1
 	pc := regs.PC
-	regs.PC += size
 	opcode := memory[pc]
+	mnemonic := mnemonics[opcode]
+	size := opsizes[mnemonic]
+	cycles := opcycles[opcode]
+	defer cycle_count += cycles
+	regs.PC += size
 	dest := cast(Register)(opcode & 0b00_111_000 >> 3)
 	source := cast(Register)(opcode & 0b00_000_111)
 	pair := Register_Pair(u8(dest) >> 1)
@@ -88,10 +86,10 @@ exec_8080_instruction :: proc(using state: ^i8080_State, using instruction: ^Ins
 	when CPU_DIAG {
 		if pc == 0x689 {
 			fmt.println("\nCPU TEST FAILED")
-			os.exit(1)
+			return false
 		} else if pc == 0x069B {
 			fmt.println("\nCPU OK")
-			os.exit(0)
+			return false
 		}
 	}
 	
@@ -404,6 +402,8 @@ exec_8080_instruction :: proc(using state: ^i8080_State, using instruction: ^Ins
 				set_flag(state, .S, (status >> 7) & 1 == 1)
 				regs.A = memory[regs.SP+1]
 			} else {
+				regs.p[pair].v = (regs.p[pair].v) | u16be(memory[regs.SP]) & 0xff
+				regs.p[pair].v = (regs.p[pair].v) | u16be(memory[regs.SP]) & 0xff00 >> 8
 				regs.p[pair].L = memory[regs.SP]
 				regs.p[pair].H = memory[regs.SP+1]
 			}
@@ -440,9 +440,10 @@ exec_8080_instruction :: proc(using state: ^i8080_State, using instruction: ^Ins
 		case .HLT:
 		{
 			fmt.println("HALT")
-			os.exit(0)
+			return false
 		}
 	}
+	return true
 }
 
 generate_interrupt :: proc(cpu: ^i8080_State, num: u16) {
@@ -486,170 +487,6 @@ write :: proc(using state: ^i8080_State, addr: u16, value: u8, location := #call
 	memory[addr] = value
 }
 
-decode_8080_instruction :: proc(using state: i8080_State, pc: u16) -> Instruction {
-	profile_scope(#procedure)
-	opcode := memory[pc]
-	dest := cast(Register)(opcode & 0b00_111_000 >> 3)
-	source := cast(Register)(opcode & 0b00_000_111)
-	pair := Register_Pair(u8(dest) >> 1)
-	opdigits := opcode >> 6
-	
-	if opdigits == 0b01 { // MOV & HLT
-		if dest == .NULL && source == .NULL {
-			return Instruction{.HLT, 1, 1}
-		}
-		if source == .NULL || dest == .NULL {
-			return Instruction{.MOV, 1, 2}
-		}
-		return Instruction{.MOV, 1, 1}
-	}
-	
-	if opdigits == 0b00 && source == .NULL {
-		cycles := dest == .NULL ? 3 : 2
-		return Instruction{.MVI, 2, cycles}
-	}
-	
-	if opdigits == 0b00 { // INR & DCR
-		cycles := dest == .NULL ? 3 : 1
-		if source == auto_cast 0b100 {
-			return Instruction{.INR, 1, cycles}
-		} else if source == auto_cast 0b101 {
-			return Instruction{.DCR, 1, cycles}
-		}
-	}
-
-	if opdigits == 0b10 { // ADD & ADC
-		cycles := source == .NULL ? 2 : 1
-		if dest == auto_cast 0b000 {
-			return Instruction{.ADD, 1, cycles}
-		} else if dest == auto_cast 0b001 {
-			return Instruction{.ADC, 1, cycles}
-		}
-	}
-
-	if opdigits == 0b10 && dest == auto_cast 0b010 {
-		cycles := source == .NULL ? 2 : 1
-		return Instruction{.SUB, 1, cycles}
-	}
-	
-	if opdigits == 0b10 && dest == auto_cast 0b011 {
-		cycles := source == .NULL ? 2 : 1
-		return Instruction{.SBB, 1, cycles}
-	}
-	
-	if opdigits == 0b10 && dest == auto_cast 0b100 {
-		cycles := source == .NULL ? 2 : 1
-		return Instruction{.ANA, 1, cycles}
-	}
-
-	if opdigits == 0b10 && dest == auto_cast 0b101 {
-		cycles := source == .NULL ? 2 : 1
-		return Instruction{.XRA, 1, cycles}
-	}
-	
-	if opdigits == 0b10 && dest == auto_cast 0b110 {
-		cycles := source == .NULL ? 2 : 1
-		return Instruction{.ORA, 1, cycles}
-	}
-	
-	if opdigits == 0b10 && dest == auto_cast 0b111 {
-		cycles := source == .NULL ? 2 : 1
-		return Instruction{.CMP, 1, cycles}
-	}
-
-	if opdigits == 0b11 && source == auto_cast 0b010 { // Jcondition
-		mnemonic := Mnemonic(u8(Mnemonic.JMP)+1 + u8(dest))
-		return Instruction{mnemonic, 3, 3}
-	}
-	if opdigits == 0b11 && source == auto_cast 0b000 { // Rcondition
-		mnemonic := Mnemonic(u8(Mnemonic.RET)+1 + u8(dest))
-		return Instruction{mnemonic, 1, 1} // cycles = 1/3
-	}
-	if opdigits == 0b11 && source == auto_cast 0b100 { // Ccondition
-		mnemonic := Mnemonic(u8(Mnemonic.CALL)+1 + u8(dest))
-		return Instruction{mnemonic, 3, 3} // cycles = 3/5
-	}
-	
-	if opdigits == 0b11 && source == auto_cast 0b111 {
-		return Instruction{.RST, 1, 3}
-	}
-
-	if opdigits == 0b00 {
-		if u8(dest) & 1 == 1 {
-			if source == auto_cast 0b001 {
-				return Instruction{.DAD, 1, 3}
-			}
-			if source == auto_cast 0b011 {
-				return Instruction{.DCX, 1, 1}
-			}
-		} else {
-			if source == auto_cast 0b011 {
-				return Instruction{.INX, 1, 1}
-			}
-		}
-	}
-
-	
-	if opdigits == 0b11 && u8(dest) & 1 == 0 { // PUSH & POP
-		if source == auto_cast 0b101 {
-			return Instruction{.PUSH, 1, 3}
-		}
-		if source == auto_cast 0b001 {
-			return Instruction{.POP, 1, 3}
-		}
-	}
-
-	if opdigits == 0b00 && source == auto_cast 0b001 {
-		if u8(dest) & 1 == 0 {
-			return Instruction{.LXI, 3, 3}
-		}
-	}
-
-	switch opcode {
-		case 0xc6: return Instruction{.ADI, 2, 2}
-		case 0xce: return Instruction{.ACI, 2, 2}
-		case 0xd6: return Instruction{.SUI, 2, 2}
-		case 0xde: return Instruction{.SBI, 2, 2}
-		case 0xe6: return Instruction{.ANI, 2, 2}
-		case 0xee: return Instruction{.XRI, 2, 2}
-		case 0xf6: return Instruction{.ORI, 2, 2}
-		case 0xfe: return Instruction{.CPI, 2, 2}
-		case 0x07: return Instruction{.RLC, 1, 1}
-		case 0x0f: return Instruction{.RRC, 1, 1}
-		case 0x17: return Instruction{.RAL, 1, 1}
-		case 0x1f: return Instruction{.RAR, 1, 1}
-		
-		case 0xc3: return Instruction{.JMP, 3, 3}
-		case 0xcd: return Instruction{.CALL, 3, 5}
-		case 0xc9: return Instruction{.RET, 1, 3}
-		
-		case 0xdb: return Instruction{.IN, 2, 3}
-		case 0xd3: return Instruction{.OUT, 2, 3}
-		
-		case 0x32: return Instruction{.STA, 3, 4}
-		case 0x3a: return Instruction{.LDA, 3, 4}
-		
-		case 0xeb: return Instruction{.XCHG, 1, 1}
-		case 0xe3: return Instruction{.XTHL, 1, 5}
-		case 0xf9: return Instruction{.SPHL, 1, 1}
-		case 0xe9: return Instruction{.PCHL, 1, 1}
-		
-		case 0x02, 0x12: return Instruction{.STAX, 1, 2}
-		case 0x0a, 0x1a: return Instruction{.LDAX, 1, 2}
-		
-		case 0x2f: return Instruction{.CMA, 1, 1}
-		case 0x37: return Instruction{.STC, 1, 1}
-		case 0x3f: return Instruction{.CMC, 1, 1}
-		case 0x27: return Instruction{.DAA, 1, 1}
-		case 0x22: return Instruction{.SHLD, 3, 5}
-		case 0x2a: return Instruction{.LHLD, 3, 5}
-		case 0xfb: return Instruction{.EI, 1, 1}
-		case 0xf3: return Instruction{.DI, 1, 1}
-
-		case: 
-			return Instruction{.NOP, 1, 1}
-	}
-}
 
 set_flags :: proc(using state: ^i8080_State, v: u8) {
 	set_flag(state, .Z, v == 0)
@@ -671,13 +508,12 @@ set_flag :: proc(using state: ^i8080_State, flag: Flag, v: bool) {
 	}
 }
 
-print_8080 :: proc(state: i8080_State, addr: u16) -> int {
-	instruction := decode_8080_instruction(state, addr)
-	return print_8080_instruction(state, instruction, addr)
-}
-	
-print_8080_instruction :: proc(using state: i8080_State, using instruction: Instruction, pc: u16) -> int {
+
+print_8080_instruction :: proc(using state: i8080_State, pc: u16) -> int {
+	profile_scope(#procedure)
 	opcode := memory[pc]
+	mnemonic := mnemonics[opcode]
+	size := opsizes[mnemonic]
 	dest := cast(Register)(opcode & 0b00_111_000 >> 3)
 	source := cast(Register)(opcode & 0b00_000_111)
 	pair := Register_Pair(u8(dest) >> 1)
@@ -726,6 +562,7 @@ print_8080_instruction :: proc(using state: i8080_State, using instruction: Inst
 }
 
 print_registers :: proc(using state: i8080_State, prev_length: int) {
+	profile_scope(#procedure)
 	for _ in 0..<50-prev_length {
 		fmt.printf(" ")
 	}
@@ -817,11 +654,155 @@ Mnemonic :: enum u8 {
 	DI,
 }
 
+mnemonics := [256]Mnemonic {
+	.NOP, .LXI, .STAX, .INX, .INR, .DCR, .MVI, .RLC,
+	.NOP, .DAD, .LDAX, .DCX, .INR, .DCR, .MVI, .RRC,
+	.NOP, .LXI, .STAX, .INX, .INR, .DCR, .MVI, .RAL,
+	.NOP, .DAD, .LDAX, .DCX, .INR, .DCR, .MVI, .RAR,
+	.NOP, .LXI, .SHLD, .INX, .INR, .DCR, .MVI, .DAA,
+	.NOP, .DAD, .LHLD, .DCX, .INR, .DCR, .MVI, .CMA,
+	.NOP, .LXI, .STA, .INX, .INR, .DCR, .MVI, .STC,
+	.NOP, .DAD, .LDA, .DCX, .INR, .DCR, .MVI, .CMC,
+	.MOV, .MOV, .MOV, .MOV, .MOV, .MOV, .MOV, .MOV, 
+	.MOV, .MOV, .MOV, .MOV, .MOV, .MOV, .MOV, .MOV, 
+	.MOV, .MOV, .MOV, .MOV, .MOV, .MOV, .MOV, .MOV,
+	.MOV, .MOV, .MOV, .MOV, .MOV, .MOV, .MOV, .MOV,
+	.MOV, .MOV, .MOV, .MOV, .MOV, .MOV, .MOV, .MOV,
+	.MOV, .MOV, .MOV, .MOV, .MOV, .MOV, .MOV, .MOV,
+	.MOV, .MOV, .MOV, .MOV, .MOV, .MOV, .HLT, .MOV,
+	.MOV, .MOV, .MOV, .MOV, .MOV, .MOV, .MOV, .MOV, 
+	.ADD, .ADD, .ADD, .ADD, .ADD, .ADD, .ADD, .ADD,
+	.ADC, .ADC, .ADC, .ADC, .ADC, .ADC, .ADC, .ADC,
+	.SUB, .SUB, .SUB, .SUB, .SUB, .SUB, .SUB, .SUB,
+	.SBB, .SBB, .SBB, .SBB, .SBB, .SBB, .SBB, .SBB,
+	.ANA, .ANA, .ANA, .ANA, .ANA, .ANA, .ANA, .ANA,
+	.XRA, .XRA, .XRA, .XRA, .XRA, .XRA, .XRA, .XRA,
+	.ORA, .ORA, .ORA, .ORA, .ORA, .ORA, .ORA, .ORA,
+	.CMP, .CMP, .CMP, .CMP, .CMP, .CMP, .CMP, .CMP,
+	.RNZ, .POP, .JNZ, .JMP, .CNZ, .PUSH, .ADI, .RST,
+	.RZ, .RET, .JZ, .NOP, .CZ, .CALL, .ACI, .RST,
+	.RNC, .POP, .JNC, .OUT, .CNC, .PUSH, .SUI, .RST,
+	.RC, .NOP, .JC, .IN, .CC, .NOP, .SBI, .RST,
+	.RPO, .POP, .JPO, .XTHL, .CPO, .PUSH, .ANI, .RST,
+	.RPE, .PCHL, .JPE, .XCHG, .CPE, .NOP, .XRI, .RST,
+	.RP, .POP, .JP, .DI, .CP, .PUSH, .ORI, .RST,
+	.RM, .SPHL, .JM, .EI, .CM, .NOP, .CPI, .RST, 
+}
 
-Instruction :: struct {
-	mnemonic: Mnemonic,
-	size: u16,
-	cycles: int,
+opsizes := [Mnemonic]u16 {
+	.NOP = 1,
+	.MOV = 1,
+	.HLT = 1,
+	.MVI = 2,
+	.DCR = 1,
+	.INR = 1,
+	.ADD = 1,
+	.ADC = 1,
+	.SUB = 1,
+	.SBB = 1,
+	.ANA = 1,
+	.XRA = 1,
+	.ORA = 1,
+	.CMP = 1,
+	.ADI = 2,
+	.ACI = 2,
+	.SUI = 2,
+	.SBI = 2,
+	.ANI = 2,
+	.XRI = 2,
+	.ORI = 2,
+	.CPI = 2,
+	.RLC = 1,
+	.RRC = 1,
+	.RAL = 1,
+	.RAR = 1,
+	.JMP = 3,
+	.JNZ = 3,
+	.JZ  = 3,
+	.JNC = 3,
+	.JC  = 3,
+	.JPO = 3,
+	.JPE = 3,
+	.JP  = 3,
+	.JM  = 3,
+	.CALL = 3,
+	.CNZ  = 3,
+	.CZ   = 3,
+	.CNC  = 3,
+	.CC   = 3,
+	.CPO  = 3,
+	.CPE  = 3,
+	.CP   = 3,
+	.CM   = 3,
+	.RET = 1,
+	.RNZ = 1,
+	.RZ  = 1,
+	.RNC = 1,
+	.RC  = 1,
+	.RPO = 1,
+	.RPE = 1,
+	.RP  = 1,
+	.RM  = 1,
+	.RST = 1,
+	.IN  = 2,
+	.OUT = 2,
+	.LXI = 3,
+	.PUSH = 1,
+	.POP  = 1,
+	.STA = 3,
+	.LDA = 3,
+	.XCHG = 1,
+	.XTHL = 1,
+	.SPHL = 1,
+	.PCHL = 1,
+	.DAD  = 1,
+	.STAX = 1,
+	.LDAX = 1,
+	.INX = 1,
+	.DCX = 1,
+	.CMA = 1,
+	.STC = 1,
+	.CMC = 1,
+	.DAA = 1,
+	.SHLD = 3,
+	.LHLD = 3,
+	.EI = 1,
+	.DI = 1,
+}
+
+opcycles := [256]int {
+	1, 3, 2, 1, 1, 1, 2, 1,
+	1, 3, 2, 1, 1, 1, 2, 1,
+	1, 3, 2, 1, 1, 1, 2, 1,
+	1, 3, 2, 1, 1, 1, 2, 1,
+	1, 3, 5, 1, 1, 1, 2, 1,
+	1, 3, 5, 1, 1, 1, 2, 1,
+	1, 3, 4, 1, 3, 3, 3, 1,
+	1, 3, 4, 1, 1, 1, 2, 1,
+	1, 1, 1, 1, 1, 1, 2, 1,
+	1, 1, 1, 1, 1, 1, 2, 1,
+	1, 1, 1, 1, 1, 1, 2, 1,
+	1, 1, 1, 1, 1, 1, 2, 1,
+	1, 1, 1, 1, 1, 1, 2, 1,
+	1, 1, 1, 1, 1, 1, 2, 1,
+	2, 2, 2, 2, 2, 2, 1, 2,
+	1, 1, 1, 1, 1, 1, 2, 1,
+	1, 1, 1, 1, 1, 1, 2, 1,
+	1, 1, 1, 1, 1, 1, 2, 1,
+	1, 1, 1, 1, 1, 1, 2, 1,
+	1, 1, 1, 1, 1, 1, 2, 1,
+	1, 1, 1, 1, 1, 1, 2, 1,
+	1, 1, 1, 1, 1, 1, 2, 1,
+	1, 1, 1, 1, 1, 1, 2, 1,
+	1, 1, 1, 1, 1, 1, 2, 1,
+	1, 3, 3, 3, 3, 3, 2, 3,
+	1, 3, 3, 1, 3, 5, 2, 3,
+	1, 3, 3, 3, 3, 3, 2, 3,
+	1, 1, 3, 3, 3, 1, 2, 3,
+	1, 3, 3, 5, 3, 3, 2, 3,
+	1, 1, 3, 1, 3, 1, 2, 3,
+	1, 3, 3, 1, 3, 3, 2, 3,
+	1, 1, 3, 1, 3, 1, 2, 3,
 }
 
 Register :: enum u8 {
