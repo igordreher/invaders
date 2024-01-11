@@ -3,24 +3,30 @@ package main
 import "core:testing"
 import "core:fmt"
 import "core:os"
-import "core:prof/spall"
+
+CPU_DIAG :: #config(CPU_DIAG, ODIN_TEST)
 
 @(test)
-test_8080 :: proc(^testing.T) {
+test_8080 :: proc(t: ^testing.T) {
 	file := #load("../cpudiag.bin")
 	cpu := i8080_init({})
 	copy(cpu.memory[0x100:], file)
 	file_size := len(file) + 0x100
-	
-    // Fix the first instruction to be JMP 0x100    
+
+    // Fix the first instruction to be JMP 0x100
 	cpu.regs.PC = 0x100
 
 	for cpu.regs.PC < auto_cast file_size {
 		profile_scope("loop_iteration")
 		c := print_8080_instruction(cpu, cpu.regs.PC)
-		next := i8080_next_instruction(&cpu)
-		if !next do break
+		i8080_next_instruction(&cpu)
 		print_registers(cpu, c)
+
+		if cpu.regs.PC == 0x0689 {
+			testing.fail_now(t)
+		} else if cpu.regs.PC == 0x069B {
+			break
+		}
 	}
 }
 
@@ -83,19 +89,9 @@ i8080_next_instruction :: proc(using state: ^i8080_State) -> bool {
 	addr_pair := cast(u16)regs.p[pair].v
 	condition := Condition(dest)
 
-	when CPU_DIAG {
-		if pc == 0x689 {
-			fmt.println("\nCPU TEST FAILED")
-			return false
-		} else if pc == 0x069B {
-			fmt.println("\nCPU OK")
-			return false
-		}
-	}
-	
 	switch mnemonic {
 		case .NOP: // do nothing
-		
+
 		// Data Transfer:
 		case .MOV:
 		{
@@ -251,9 +247,9 @@ i8080_next_instruction :: proc(using state: ^i8080_State) -> bool {
 			set_flag(state, .AC, regs.A & 0xf < a & 0xf)
 			set_flag(state, .CY, regs.A < a)
 			// if regs.A & 0xf > 9 {
-			// 	regs.A += 6	
+			// 	regs.A += 6
 			// 	set_flag(state, .CY, regs.A < 6)
-			// } 
+			// }
 			// if regs.A & 0xf0 > 0x90 || .CY in flags {
 			// 	regs.A = regs.A + 0x60
 			// 	set_flag(state, .CY, regs.A < 0x60)
@@ -425,7 +421,7 @@ i8080_next_instruction :: proc(using state: ^i8080_State) -> bool {
 		{
 			regs.A = port_in(state, bytes[0])
 		}
-		case .OUT: 
+		case .OUT:
 		{
 			port_out(state, bytes[0], regs.A)
 		}
@@ -447,6 +443,7 @@ i8080_next_instruction :: proc(using state: ^i8080_State) -> bool {
 }
 
 generate_interrupt :: proc(cpu: ^i8080_State, num: u16) {
+	profile_scope(#procedure)
 	push(cpu, cpu.regs.PC)
 	cpu.regs.PC = 8 * num
 	cpu.interrupt_enabled = false
@@ -473,7 +470,7 @@ write :: proc(using state: ^i8080_State, addr: u16, value: u8, location := #call
 		fmt.printf("Out of bounds write to memory %04x\n", addr)
 		os.exit(1)
 	}
-		
+
 	if addr < 0x2000 && !CPU_DIAG {
 		fmt.printf("\n[%s:%s][%d:%d] Writing to ROM not allowed %04x\n", location.file_path, location.procedure, location.line, location.column, addr)
 		fmt.printf("%04x\n", regs.PC)
@@ -483,7 +480,7 @@ write :: proc(using state: ^i8080_State, addr: u16, value: u8, location := #call
 		fmt.printf("%04x\n", regs.PC)
 		return
     }
-	
+
 	memory[addr] = value
 }
 
@@ -519,7 +516,7 @@ print_8080_instruction :: proc(using state: i8080_State, pc: u16) -> int {
 	pair := Register_Pair(u8(dest) >> 1)
 	c := fmt.printf("%04x %02x %s", pc, opcode, mnemonic)
 	#partial switch mnemonic {
-		case .ADD, .SBB, .ADC, .SUB, .CMP, .ORA, .XRA, .ANA: 
+		case .ADD, .SBB, .ADC, .SUB, .CMP, .ORA, .XRA, .ANA:
 		{
 			c += print_reg(source)
 		}
@@ -537,7 +534,7 @@ print_8080_instruction :: proc(using state: i8080_State, pc: u16) -> int {
 			c += fmt.printf(",")
 			c += print_reg(source)
 		}
-		case .MVI: 
+		case .MVI:
 		{
 			c += print_reg(dest)
 			c += fmt.printf(",")
@@ -597,7 +594,7 @@ Mnemonic :: enum u8 {
 	RRC,
 	RAL,
 	RAR,
-	
+
 	// NOTE: This condition group is order dependent
 	JMP,
 	JNZ,
@@ -626,7 +623,7 @@ Mnemonic :: enum u8 {
 	RPE,
 	RP,
 	RM,
-	
+
 	RST,
 	IN,
 	OUT,
@@ -663,14 +660,14 @@ mnemonics := [256]Mnemonic {
 	.NOP, .DAD, .LHLD, .DCX, .INR, .DCR, .MVI, .CMA,
 	.NOP, .LXI, .STA, .INX, .INR, .DCR, .MVI, .STC,
 	.NOP, .DAD, .LDA, .DCX, .INR, .DCR, .MVI, .CMC,
-	.MOV, .MOV, .MOV, .MOV, .MOV, .MOV, .MOV, .MOV, 
-	.MOV, .MOV, .MOV, .MOV, .MOV, .MOV, .MOV, .MOV, 
+	.MOV, .MOV, .MOV, .MOV, .MOV, .MOV, .MOV, .MOV,
+	.MOV, .MOV, .MOV, .MOV, .MOV, .MOV, .MOV, .MOV,
 	.MOV, .MOV, .MOV, .MOV, .MOV, .MOV, .MOV, .MOV,
 	.MOV, .MOV, .MOV, .MOV, .MOV, .MOV, .MOV, .MOV,
 	.MOV, .MOV, .MOV, .MOV, .MOV, .MOV, .MOV, .MOV,
 	.MOV, .MOV, .MOV, .MOV, .MOV, .MOV, .MOV, .MOV,
 	.MOV, .MOV, .MOV, .MOV, .MOV, .MOV, .HLT, .MOV,
-	.MOV, .MOV, .MOV, .MOV, .MOV, .MOV, .MOV, .MOV, 
+	.MOV, .MOV, .MOV, .MOV, .MOV, .MOV, .MOV, .MOV,
 	.ADD, .ADD, .ADD, .ADD, .ADD, .ADD, .ADD, .ADD,
 	.ADC, .ADC, .ADC, .ADC, .ADC, .ADC, .ADC, .ADC,
 	.SUB, .SUB, .SUB, .SUB, .SUB, .SUB, .SUB, .SUB,
@@ -686,7 +683,7 @@ mnemonics := [256]Mnemonic {
 	.RPO, .POP, .JPO, .XTHL, .CPO, .PUSH, .ANI, .RST,
 	.RPE, .PCHL, .JPE, .XCHG, .CPE, .NOP, .XRI, .RST,
 	.RP, .POP, .JP, .DI, .CP, .PUSH, .ORI, .RST,
-	.RM, .SPHL, .JM, .EI, .CM, .NOP, .CPI, .RST, 
+	.RM, .SPHL, .JM, .EI, .CM, .NOP, .CPI, .RST,
 }
 
 opsizes := [Mnemonic]u16 {
@@ -841,10 +838,10 @@ Condition :: enum u8 {
 }
 
 Flag :: enum u8 {
-	Z  = 0b000, 
+	Z  = 0b000,
 	CY = 0b010,
-	P  = 0b100, 
-	S  = 0b110, 
+	P  = 0b100,
+	S  = 0b110,
 	AC, // NOTE: this flag is not used in space invaders
 }
 

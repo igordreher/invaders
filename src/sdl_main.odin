@@ -1,3 +1,4 @@
+//+build linux
 package main
 
 import "core:fmt"
@@ -7,12 +8,10 @@ import "core:mem"
 import "core:time"
 import sdl "vendor:sdl2"
 import "vendor:sdl2/mixer"
-import "core:prof/spall"
 
-CPU_DIAG :: #config(CPU_DIAG, ODIN_TEST)
 
 main :: proc() {
-	when PROFILE 
+	when PROFILE
 	{
 		ctx, _ = spall.context_create("prof.spall")
 		buf_backing := make([]byte, spall.BUFFER_DEFAULT_SIZE)
@@ -22,12 +21,7 @@ main :: proc() {
 		spall.buffer_destroy(&ctx, &buf)
 		spall.context_destroy(&ctx)
 	}
-	
-	when CPU_DIAG {
-		test_8080(nil)
-		return
-	}
-		
+
 	rom := #load("../invaders_rom")
 	cpu := i8080_init(rom, port_in, port_out)
 	vram := cpu.memory[0x2400:0x4000]
@@ -43,11 +37,11 @@ main :: proc() {
 		fmt.eprintln("failed to create SDL renderer")
 		os.exit(1)
 	}
-	
+
 	// mixer.OpenAudio(44100, sdl.AUDIO_S16LSB, 1, 4096)
 	mixer.OpenAudio(11025, sdl.AUDIO_U8, 1, 4096/4)
 	sdl_assert_err()
-	
+
 	mixer.Volume(-1, 20)
 	load_chunk :: proc($file: string) -> ^mixer.Chunk {
 		mem := #load(file)
@@ -62,14 +56,16 @@ main :: proc() {
 	audio_chunks[6] = load_chunk("../sound/6.wav")
 	audio_chunks[7] = load_chunk("../sound/7.wav")
 	audio_chunks[8] = load_chunk("../sound/8.wav")
-	
+
 	texture := sdl.CreateTexture(renderer, auto_cast sdl.PixelFormatEnum.RGB888, sdl.TextureAccess.STREAMING, WIDTH, HEIGHT)
 	sdl_assert_err()
-		
+
 	cpu_speed := 2e+6
-	refresh_rate := 60
+	refresh_rate :: 60
 	cycles_per_interrupt := cpu_speed / refresh_rate / 2
 	next_interrupt := cycles_per_interrupt
+	sec_per_frame := time.Duration(1)*time.Second/refresh_rate
+	last_refresh := time.now()
 	game_loop: for cpu.regs.PC < auto_cast len(rom) {
 		profile_scope("main_loop")
 		event: sdl.Event
@@ -88,15 +84,24 @@ main :: proc() {
 				}
 			}
 		}
-		
+
 		if cpu.interrupt_enabled && cpu.cycle_count > next_interrupt {
-			profile_scope("generate_interrupt")
-			render_vram(vram, renderer, texture)
+            profile_scope("interrupt")
+            if which_interrupt == 2 {
+                profile_scope("refresh")
+                 render_vram(vram, renderer, texture)
+			     d := time.since(last_refresh)
+			     sleep_time := sec_per_frame - d
+			     if sleep_time > 0 {
+                     time.sleep(sleep_time)
+			     }
+			     last_refresh = time.now()
+			}
 			generate_interrupt(&cpu, which_interrupt)
 			which_interrupt = ((which_interrupt + 2) % 2) + 1
 			next_interrupt += cycles_per_interrupt
 		}
-			
+
 		i8080_next_instruction(&cpu)
 	}
 }
@@ -172,6 +177,8 @@ render_vram :: proc(vram: []byte, renderer: ^sdl.Renderer, texture: ^sdl.Texture
 	sdl.SetRenderDrawColor(renderer, 255, 255, 0, 255)
 	sdl.RenderClear(renderer)
 
+    {
+    profile_scope("copy loop")
 	for i in 0..<WIDTH {
 		for j := 0; j < HEIGHT; j+= 8 {
 			offset := (HEIGHT-1-j)*(WIDTH*BPP) + (i*BPP)
@@ -184,12 +191,13 @@ render_vram :: proc(vram: []byte, renderer: ^sdl.Renderer, texture: ^sdl.Texture
 			}
 		}
 	}
+	}
 	sdl.UpdateTexture(texture, nil, &pixels[0], auto_cast WIDTH*BPP)
 	sdl_assert_err()
 	sdl.RenderCopy(renderer, texture, nil, nil)
 	sdl.RenderPresent(renderer)
 }
-	
+
 sdl_assert_err :: proc(location := #caller_location) {
 	when !ODIN_DISABLE_ASSERT {
 		err := sdl.GetErrorString()
@@ -198,20 +206,6 @@ sdl_assert_err :: proc(location := #caller_location) {
 			os.exit(1)
 		}
 	}
-}
-
-PROFILE :: #config(PROFILE, ODIN_DEBUG)
-when PROFILE 
-{
-	buf: spall.Buffer
-	ctx: spall.Context
-}
-@(deferred_none=_profile_scope_end)
-profile_scope :: proc(name: string, location := #caller_location) {
-	when PROFILE do spall._buffer_begin(&ctx, &buf, name, "", location)
-}
-_profile_scope_end :: proc() {
-	when PROFILE do spall._buffer_end(&ctx, &buf)
 }
 
 // pixels := [WIDTH*HEIGHT][BPP]byte{}
