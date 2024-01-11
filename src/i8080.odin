@@ -513,7 +513,6 @@ print_8080_instruction :: proc(using state: i8080_State, pc: u16) -> int {
 	size := opsizes[mnemonic]
 	dest := cast(Register)(opcode & 0b00_111_000 >> 3)
 	source := cast(Register)(opcode & 0b00_000_111)
-	pair := Register_Pair(u8(dest) >> 1)
 	c := fmt.printf("%04x %02x %s", pc, opcode, mnemonic)
 	#partial switch mnemonic {
 		case .ADD, .SBB, .ADC, .SUB, .CMP, .ORA, .XRA, .ANA:
