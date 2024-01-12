@@ -4,9 +4,11 @@ package main
 import "core:fmt"
 import "core:sys/windows"
 import "core:mem"
+import "core:runtime"
 import "vendor:directx/dxgi"
 import "vendor:directx/d3d11"
 import "vendor:directx/d3d_compiler"
+
 
 WIDTH :: 224
 HEIGHT :: 256
@@ -15,6 +17,9 @@ SCALE :: 2
 should_close: bool
 
 main :: proc() {
+	when PROFILE do profile_init()
+	defer when PROFILE do profile_end()
+
 	h_instance := windows.HINSTANCE(windows.GetModuleHandleW(nil))
 	window_name := windows.utf8_to_wstring("Space Invaders")
 	wc: windows.WNDCLASSW
@@ -276,6 +281,7 @@ main :: proc() {
 	rom := #load("../invaders_rom")
 	cpu := i8080_init(rom, port_in, port_out)
 	vram := cpu.memory[0x2400:0x4000]
+	ports = cpu.ports[:]
 
 	cpu_speed := 2e+6
 	refresh_rate :: 60
@@ -291,8 +297,12 @@ main :: proc() {
 			windows.DispatchMessageW(&msg)
 		}
 
-		if cpu.interrupt_enabled && cpu.cycle_count > next_interrupt {
+		for !cpu.interrupt_enabled || cpu.cycle_count < next_interrupt {
+			i8080_next_instruction(&cpu)
+		}
+		{
 			if which_interrupt == 2 {
+				profile_scope("render")
 				update_vram(vram, device_context, &texture.id3d11resource)
 				hr := swap_chain->Present(1, {})
 				win_assert(hr)
@@ -301,13 +311,12 @@ main :: proc() {
 			which_interrupt = ((which_interrupt + 2) % 2) + 1
 			next_interrupt += cycles_per_interrupt
 		}
-
-		// print_8080_instruction(cpu, cpu.regs.PC); fmt.print("\n")
-		i8080_next_instruction(&cpu)
 	}
 }
 
+
 update_vram :: proc(vram: []byte, device_context: ^d3d11.IDeviceContext, texture: ^d3d11.IResource) {
+	profile_scope(#procedure)
 	mapped: d3d11.MAPPED_SUBRESOURCE
 	hr := device_context->Map(texture, 0, .WRITE_DISCARD, {}, &mapped)
 	if win_assert(hr) {
@@ -359,16 +368,38 @@ port_out :: proc(state: ^i8080_State, port: u8, value: u8) {
     }
 }
 
+ports: []byte
 window_proc :: proc "stdcall" (hwnd: windows.HWND, msg: windows.UINT, w_param: windows.WPARAM, l_param: windows.LPARAM) -> windows.LRESULT
 {
+	// context = runtime.default_context()
 	switch msg {
 		case windows.WM_CLOSE, windows.WM_QUIT, windows.WM_DESTROY:
 		{
 			should_close = true
 			return 0
 		}
+		case windows.WM_KEYDOWN, windows.WM_KEYUP:
+		{
+			state := msg == windows.WM_KEYDOWN
+			switch w_param
+			{
+				case windows.VK_RETURN: toggle_bit(&ports[1], 0, state)
+				case windows.VK_LEFT  : toggle_bit(&ports[1], 5, state)
+				case windows.VK_RIGHT : toggle_bit(&ports[1], 6, state)
+				case windows.VK_SPACE : toggle_bit(&ports[1], 4, state)
+				case windows.VK_1	  : toggle_bit(&ports[1], 2, state)
+			}
+		}
 	}
 	return windows.DefWindowProcW(hwnd, msg, w_param, l_param)
+}
+
+toggle_bit :: proc "stdcall" (v: ^u8, bit: u8, state: bool) {
+	if state {
+		v^ |= 1 << bit
+	} else {
+		v^ &= 0xff ~ (1 << bit)
+	}
 }
 
 win_assert :: proc(#any_int hresult: int, location := #caller_location) -> bool {
