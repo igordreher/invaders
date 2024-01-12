@@ -1,4 +1,4 @@
-//+build linux
+//+ignore
 package main
 
 import "core:fmt"
