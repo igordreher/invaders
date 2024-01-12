@@ -7,7 +7,6 @@ import "core:mem"
 import "vendor:directx/dxgi"
 import "vendor:directx/d3d11"
 import "vendor:directx/d3d_compiler"
-import "vendor:sdl2/image"
 
 WIDTH :: 224
 HEIGHT :: 256
@@ -213,16 +212,6 @@ main :: proc() {
 		win_assert(hr) // TODO
 	}
 
-	image.Init({})
-	surf := image.Load("./test.bmp")
-	assert(surf != nil)
-	bitmap := [WIDTH/8*HEIGHT]byte {} // 1bpp
-	pixels := ([^]u8)(surf.pixels)[:surf.w*surf.h]
-	for pixel, i in pixels {
-		p := uint(i%8)
-		bitmap[i/8] |= (0b1000_0000 >> p) * pixel
-	}
-
 	texture_res: ^d3d11.IShaderResourceView
 	texture: ^d3d11.ITexture2D
 	{
@@ -276,7 +265,17 @@ main :: proc() {
 		device_context->PSSetShaderResources(0, 1, &texture_res)
 	}
 
-	for !should_close
+	rom := #load("../invaders_rom")
+	cpu := i8080_init(rom, port_in, port_out)
+	vram := cpu.memory[0x2400:0x4000]
+
+	cpu_speed := 2e+6
+	refresh_rate :: 60
+	cycles_per_interrupt := cpu_speed / refresh_rate / 2
+	next_interrupt := cycles_per_interrupt
+	which_interrupt: u16
+
+	for !should_close && cpu.regs.PC < auto_cast len(rom)
 	{
 		msg: windows.MSG
 		if windows.PeekMessageW(&msg, nil, 0, 0, windows.PM_REMOVE) {
@@ -284,25 +283,72 @@ main :: proc() {
 			windows.DispatchMessageW(&msg)
 		}
 
-		// update vram
-		mapped: d3d11.MAPPED_SUBRESOURCE
-		hr := device_context->Map(&texture.id3d11resource, 0, .WRITE_DISCARD, {}, &mapped)
-		if win_assert(hr) {
-			texture_height :: WIDTH
-			texture_pitch :: HEIGHT/8
-			for i in 0..<texture_height {
-				ptr := mem.ptr_offset(([^]byte)(mapped.pData), u32(i)*mapped.RowPitch)
-				mem.copy(ptr, &bitmap[texture_pitch*i], texture_pitch)
-
+		if cpu.interrupt_enabled && cpu.cycle_count > next_interrupt {
+			if which_interrupt == 2 {
+				update_vram(vram, device_context, &texture.id3d11resource)
+				hr := swap_chain->Present(1, {})
+				win_assert(hr)
 			}
-			device_context->Unmap(&texture.id3d11resource, 0)
+			generate_interrupt(&cpu, which_interrupt)
+			which_interrupt = ((which_interrupt + 2) % 2) + 1
+			next_interrupt += cycles_per_interrupt
 		}
 
-		// render
-		device_context->DrawIndexed(6, 0, 0)
-		hr = swap_chain->Present(0, {})
-		win_assert(hr)
+		// print_8080_instruction(cpu, cpu.regs.PC); fmt.print("\n")
+		i8080_next_instruction(&cpu)
 	}
+}
+
+update_vram :: proc(vram: []byte, device_context: ^d3d11.IDeviceContext, texture: ^d3d11.IResource) {
+	mapped: d3d11.MAPPED_SUBRESOURCE
+	hr := device_context->Map(texture, 0, .WRITE_DISCARD, {}, &mapped)
+	if win_assert(hr) {
+		texture_height :: WIDTH
+		texture_pitch :: HEIGHT/8
+		for i in 0..<texture_height {
+			ptr := mem.ptr_offset(([^]byte)(mapped.pData), u32(i)*mapped.RowPitch)
+			offset := texture_pitch*i
+			mem.copy(ptr, &vram[offset], texture_pitch)
+		}
+		device_context->Unmap(texture, 0)
+	}
+	device_context->DrawIndexed(6, 0, 0)
+}
+
+shift0, shift1, shift_offset: u8
+port_in :: proc(state: ^i8080_State, port: u8) -> u8 {
+    switch(port)
+    {
+        case 3:
+        {
+            v := u16(shift1)<<8 | u16(shift0)
+            return u8((v >> (8-shift_offset)) & 0xff)
+        }
+		case: return state.ports[port]
+    }
+}
+
+port_out :: proc(state: ^i8080_State, port: u8, value: u8) {
+    switch(port)
+    {
+        case 2: shift_offset = value & 0x7
+        case 4:
+		{
+            shift0 = shift1
+            shift1 = value
+		}
+		case 3:
+		{
+			state.ports[port] = value
+			// TODO: play audio
+		}
+		case 5:
+		{
+			state.ports[port] = value
+			// TODO: play audio
+		}
+		case: state.ports[port] = value
+    }
 }
 
 window_proc :: proc "stdcall" (hwnd: windows.HWND, msg: windows.UINT, w_param: windows.WPARAM, l_param: windows.LPARAM) -> windows.LRESULT

@@ -32,6 +32,6 @@ Texture2D Texture : register(t0);
 float4 ps_main(vs_out p) : SV_TARGET {
 	uint byte = Texture.Sample(Sampler, p.uv).r * 255;
 	uint pixel_index = (p.uv.x * 256) % 8;
-	uint pixel = (byte & (1 << 7-pixel_index)) >> 7-pixel_index;
+	uint pixel = (byte & (1 << pixel_index)) >> pixel_index;
 	return float4(pixel, pixel, pixel, pixel);
 }
