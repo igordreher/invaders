@@ -10,6 +10,7 @@ import "vendor:directx/d3d_compiler"
 
 WIDTH :: 224
 HEIGHT :: 256
+SCALE :: 2
 
 should_close: bool
 
@@ -43,7 +44,14 @@ main :: proc() {
 		windows.GetClientRect(hwnd, &rect)
 		client := [2]i32{rect.right - rect.left, rect.bottom - rect.top}
 		border := [2]i32{WIDTH, HEIGHT} - client
-		windows.SetWindowPos(hwnd, nil, 0, 0, WIDTH+border.x, HEIGHT+border.y, 0)
+		new_size := [2]i32{WIDTH, HEIGHT} * SCALE + border
+		// center window
+		screen: [2]i32
+		screen.x = windows.GetSystemMetrics(windows.SM_CXSCREEN)
+		screen.y = windows.GetSystemMetrics(windows.SM_CYSCREEN)
+		pos := screen/2 - new_size/2
+		//
+		windows.SetWindowPos(hwnd, nil, pos.x, pos.y, new_size.x, new_size.y, 0)
 		windows.ShowWindow(hwnd, windows.SW_NORMAL)
 	}
 
