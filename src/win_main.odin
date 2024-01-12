@@ -297,19 +297,21 @@ main :: proc() {
 			windows.DispatchMessageW(&msg)
 		}
 
-		for !cpu.interrupt_enabled || cpu.cycle_count < next_interrupt {
+		for {
 			i8080_next_instruction(&cpu)
-		}
-		{
-			if which_interrupt == 2 {
-				profile_scope("render")
-				update_vram(vram, device_context, &texture.id3d11resource)
-				hr := swap_chain->Present(1, {})
-				win_assert(hr)
+			if cpu.interrupt_enabled && cpu.cycle_count > next_interrupt {
+				generate_interrupt(&cpu, which_interrupt)
+				next_interrupt += cycles_per_interrupt
+				which_interrupt = ((which_interrupt + 2) % 2) + 1
+				if which_interrupt == 1 do break
 			}
-			generate_interrupt(&cpu, which_interrupt)
-			which_interrupt = ((which_interrupt + 2) % 2) + 1
-			next_interrupt += cycles_per_interrupt
+		}
+
+		{
+			profile_scope("render")
+			update_vram(vram, device_context, &texture.id3d11resource)
+			hr := swap_chain->Present(1, {})
+			win_assert(hr)
 		}
 	}
 }
@@ -384,10 +386,10 @@ window_proc :: proc "stdcall" (hwnd: windows.HWND, msg: windows.UINT, w_param: w
 			switch w_param
 			{
 				case windows.VK_RETURN: toggle_bit(&ports[1], 0, state)
-				case windows.VK_LEFT  : toggle_bit(&ports[1], 5, state)
-				case windows.VK_RIGHT : toggle_bit(&ports[1], 6, state)
-				case windows.VK_SPACE : toggle_bit(&ports[1], 4, state)
-				case windows.VK_1	  : toggle_bit(&ports[1], 2, state)
+				case windows.VK_LEFT, windows.VK_A: toggle_bit(&ports[1], 5, state)
+				case windows.VK_RIGHT, windows.VK_D: toggle_bit(&ports[1], 6, state)
+				case windows.VK_SPACE: toggle_bit(&ports[1], 4, state)
+				case windows.VK_1: toggle_bit(&ports[1], 2, state)
 			}
 		}
 	}
