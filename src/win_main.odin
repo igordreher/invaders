@@ -3,6 +3,7 @@ package main
 
 import "core:fmt"
 import "core:sys/windows"
+import "core:mem"
 import "vendor:directx/dxgi"
 import "vendor:directx/d3d11"
 import "vendor:directx/d3d_compiler"
@@ -221,32 +222,20 @@ main :: proc() {
 		p := uint(i%8)
 		bitmap[i/8] |= (0b1000_0000 >> p) * pixel
 	}
-	fmt.println(pixels[0:4])
-	fmt.println(bitmap[0])
 
 	texture_res: ^d3d11.IShaderResourceView
+	texture: ^d3d11.ITexture2D
 	{
-		pointer: rawptr
-		w: u32
-		BPP1 :: true
-		if BPP1 {
-			pointer = &bitmap[0]
-			w = WIDTH/8
-		} else {
-			pointer = &pixels[0]
-			w = WIDTH
-		}
-		init_data := d3d11.SUBRESOURCE_DATA { pSysMem=pointer, SysMemPitch=w }
 		tex_desc := d3d11.TEXTURE2D_DESC {
-			Width = w, Height = HEIGHT,
+			Width = HEIGHT/8, Height = WIDTH,
 			MipLevels = 1, ArraySize = 1,
 			Format = .R8_UNORM,
 			SampleDesc = {Count=1},
-			Usage = .IMMUTABLE,
+			Usage = .DYNAMIC,
 			BindFlags = {.SHADER_RESOURCE},
+			CPUAccessFlags = {.WRITE},
 		}
-		texture: ^d3d11.ITexture2D
-		hr := device->CreateTexture2D(&tex_desc, &init_data, &texture)
+		hr := device->CreateTexture2D(&tex_desc, nil, &texture)
 		win_assert(hr)
 
 		res_desc := d3d11.SHADER_RESOURCE_VIEW_DESC {
@@ -270,15 +259,7 @@ main :: proc() {
 		win_assert(hr)
 	}
 
-	for !should_close
-	{
-		msg: windows.MSG
-		if windows.PeekMessageW(&msg, nil, 0, 0, windows.PM_REMOVE) {
-			windows.TranslateMessage(&msg)
-			windows.DispatchMessageW(&msg)
-		}
-
-		// render
+	{	// only need to set theese once
 		background_color := [4]f32 {1, 0, 1, 1}
 		device_context->OMSetRenderTargets(1, &render_target_view, nil)
 		device_context->ClearRenderTargetView(render_target_view, &background_color)
@@ -293,10 +274,34 @@ main :: proc() {
 		device_context->PSSetShader(pixel_shader, nil, 0)
 		device_context->PSSetSamplers(0, 1, &sampler)
 		device_context->PSSetShaderResources(0, 1, &texture_res)
+	}
 
+	for !should_close
+	{
+		msg: windows.MSG
+		if windows.PeekMessageW(&msg, nil, 0, 0, windows.PM_REMOVE) {
+			windows.TranslateMessage(&msg)
+			windows.DispatchMessageW(&msg)
+		}
+
+		// update vram
+		mapped: d3d11.MAPPED_SUBRESOURCE
+		hr := device_context->Map(&texture.id3d11resource, 0, .WRITE_DISCARD, {}, &mapped)
+		if win_assert(hr) {
+			texture_height :: WIDTH
+			texture_pitch :: HEIGHT/8
+			for i in 0..<texture_height {
+				ptr := mem.ptr_offset(([^]byte)(mapped.pData), u32(i)*mapped.RowPitch)
+				mem.copy(ptr, &bitmap[texture_pitch*i], texture_pitch)
+
+			}
+			device_context->Unmap(&texture.id3d11resource, 0)
+		}
+
+		// render
 		device_context->DrawIndexed(6, 0, 0)
-
-		swap_chain->Present(1, {})
+		hr = swap_chain->Present(0, {})
+		win_assert(hr)
 	}
 }
 
