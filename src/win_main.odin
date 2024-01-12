@@ -5,6 +5,8 @@ import "core:fmt"
 import "core:sys/windows"
 import "vendor:directx/dxgi"
 import "vendor:directx/d3d11"
+import "vendor:directx/d3d_compiler"
+import "vendor:sdl2/image"
 
 WIDTH :: 224
 HEIGHT :: 256
@@ -21,7 +23,8 @@ main :: proc() {
 	windows.RegisterClassW(&wc)
 
 	hwnd := windows.CreateWindowExW(0, window_name, window_name,
-		windows.WS_OVERLAPPEDWINDOW &~ windows.WS_MAXIMIZEBOX &~ windows.WS_THICKFRAME,
+		// windows.WS_OVERLAPPEDWINDOW &~ windows.WS_MAXIMIZEBOX &~ windows.WS_THICKFRAME,
+		windows.WS_OVERLAPPEDWINDOW,
 		windows.CW_USEDEFAULT,
 		windows.CW_USEDEFAULT,
 		WIDTH,
@@ -35,7 +38,14 @@ main :: proc() {
 		// TODO
 	}
 
-	windows.ShowWindow(hwnd, windows.SW_NORMAL)
+	{	// set client size to WIDTH, HEIGHT
+		rect: windows.RECT
+		windows.GetClientRect(hwnd, &rect)
+		client := [2]i32{rect.right - rect.left, rect.bottom - rect.top}
+		border := [2]i32{WIDTH, HEIGHT} - client
+		windows.SetWindowPos(hwnd, nil, 0, 0, WIDTH+border.x, HEIGHT+border.y, 0)
+		windows.ShowWindow(hwnd, windows.SW_NORMAL)
+	}
 
 
 	device: ^d3d11.IDevice
@@ -73,17 +83,191 @@ main :: proc() {
 			&feature_level,
 		    &device_context,
 		)
-		// TODO: handle hr error
+		win_assert(hr)
+		viewport := d3d11.VIEWPORT {0, 0, WIDTH, HEIGHT, 0, 1}
+		device_context->RSSetViewports(1, &viewport)
 	}
 
 	render_target_view: ^d3d11.IRenderTargetView
 	{
 		frame_buffer: ^d3d11.ITexture2D
 		hr := swap_chain->GetBuffer(0, d3d11.ITexture2D_UUID, cast(^rawptr)&frame_buffer)
-		// win_assert(hr) // TODO
+		win_assert(hr) // TODO
 		hr = device->CreateRenderTargetView(frame_buffer, nil, &render_target_view)
-		// win_assert(hr)
+		win_assert(hr)
 		frame_buffer->Release()
+	}
+
+	vertex_shader: ^d3d11.IVertexShader
+	pixel_shader: ^d3d11.IPixelShader
+	vertex_buffer: ^d3d11.IBuffer
+	index_buffer: ^d3d11.IBuffer
+	input_layout: ^d3d11.IInputLayout
+	{
+		flags := d3d_compiler.D3DCOMPILE{.ENABLE_STRICTNESS}
+		when ODIN_DEBUG do flags += {.DEBUG}
+		vs_blob, ps_blob, err_blob: ^d3d11.IBlob
+		raw := #load("shader.hlsl")
+
+		hr := d3d_compiler.Compile(
+			&raw[0],
+			len(raw),
+			nil,
+			nil,
+			d3d_compiler.D3DCOMPILE_STANDARD_FILE_INCLUDE,
+			"vs_main",
+			"vs_5_0",
+			transmute(u32)flags,
+			0,
+			&vs_blob,
+			&err_blob,
+		)
+		if hr != 0 {
+			if err_blob != nil {
+				fmt.eprintln(cast(cstring)err_blob->GetBufferPointer())
+			}
+			if vs_blob != nil do vs_blob->Release()
+			panic("failed to compile ps shader")
+		}
+		hr = d3d_compiler.Compile(
+			&raw[0],
+			len(raw),
+			nil,
+			nil,
+			d3d_compiler.D3DCOMPILE_STANDARD_FILE_INCLUDE,
+			"ps_main",
+			"ps_5_0",
+			transmute(u32)flags,
+			0,
+			&ps_blob,
+			&err_blob,
+		)
+		if hr != 0 {
+			if err_blob != nil {
+				fmt.eprintln(cast(cstring)err_blob->GetBufferPointer())
+			}
+			if ps_blob != nil do ps_blob->Release()
+			panic("failed to compile ps shader")
+		}
+
+	    hr = device->CreateVertexShader(
+			vs_blob->GetBufferPointer(),
+			vs_blob->GetBufferSize(),
+			nil,
+			&vertex_shader,
+	    )
+		win_assert(hr) // TODO
+
+	    hr = device->CreatePixelShader(
+			ps_blob->GetBufferPointer(),
+			ps_blob->GetBufferSize(),
+			nil,
+			&pixel_shader,
+	    )
+		win_assert(hr) // TODO
+
+	    input_elements := [?]d3d11.INPUT_ELEMENT_DESC {
+			{ "POS", 0, .R32G32_FLOAT, 0, 0, .VERTEX_DATA, 0 },
+			{ "TEX", 0, .R32G32_FLOAT, 0, d3d11.APPEND_ALIGNED_ELEMENT, .VERTEX_DATA, 0 },
+	    }
+	    hr = device->CreateInputLayout(
+			&input_elements[0],
+			len(input_elements),
+			vs_blob->GetBufferPointer(),
+			vs_blob->GetBufferSize(),
+			&input_layout,
+	    )
+		win_assert(hr) // TODO
+
+		Vertex :: struct {pos, tex: [2]f32}
+		vertices := [4]Vertex {
+			{{+1, +1}, {1, 0}},
+			{{+1, -1}, {1, 1}},
+			{{-1, -1}, {0, 1}},
+			{{-1, +1}, {0, 0}},
+		}
+		vertex_buf_desc: d3d11.BUFFER_DESC
+		vertex_buf_desc.ByteWidth = size_of(vertices)
+		vertex_buf_desc.Usage = .DEFAULT
+		vertex_buf_desc.BindFlags = {.VERTEX_BUFFER}
+		v_init_data := d3d11.SUBRESOURCE_DATA{pSysMem=&vertices[0]}
+		hr = device->CreateBuffer(
+			&vertex_buf_desc,
+			&v_init_data,
+			&vertex_buffer,
+		)
+		win_assert(hr)// TODO
+
+		indices := [6]u32 { 0, 1, 2, 0, 2, 3, }
+		index_buf_desc: d3d11.BUFFER_DESC
+		index_buf_desc.ByteWidth = size_of(indices)
+		index_buf_desc.Usage = .DEFAULT
+		index_buf_desc.BindFlags = {.INDEX_BUFFER}
+		i_init_data := d3d11.SUBRESOURCE_DATA{pSysMem=&indices[0]}
+		hr = device->CreateBuffer(
+			&index_buf_desc,
+			&i_init_data,
+			&index_buffer,
+		)
+		win_assert(hr) // TODO
+	}
+
+	image.Init({})
+	surf := image.Load("./test.bmp")
+	assert(surf != nil)
+	bitmap := [WIDTH/8*HEIGHT]byte {} // 1bpp
+	pixels := ([^]u8)(surf.pixels)[:surf.w*surf.h]
+	for pixel, i in pixels {
+		p := uint(i%8)
+		bitmap[i/8] |= (0b1000_0000 >> p) * pixel
+	}
+	fmt.println(pixels[0:4])
+	fmt.println(bitmap[0])
+
+	texture_res: ^d3d11.IShaderResourceView
+	{
+		pointer: rawptr
+		w: u32
+		BPP1 :: true
+		if BPP1 {
+			pointer = &bitmap[0]
+			w = WIDTH/8
+		} else {
+			pointer = &pixels[0]
+			w = WIDTH
+		}
+		init_data := d3d11.SUBRESOURCE_DATA { pSysMem=pointer, SysMemPitch=w }
+		tex_desc := d3d11.TEXTURE2D_DESC {
+			Width = w, Height = HEIGHT,
+			MipLevels = 1, ArraySize = 1,
+			Format = .R8_UNORM,
+			SampleDesc = {Count=1},
+			Usage = .IMMUTABLE,
+			BindFlags = {.SHADER_RESOURCE},
+		}
+		texture: ^d3d11.ITexture2D
+		hr := device->CreateTexture2D(&tex_desc, &init_data, &texture)
+		win_assert(hr)
+
+		res_desc := d3d11.SHADER_RESOURCE_VIEW_DESC {
+			Format = .R8_UNORM,
+			ViewDimension = .TEXTURE2D,
+			Texture2D = {MipLevels=1},
+		}
+		hr = device->CreateShaderResourceView(&texture.id3d11resource, &res_desc, &texture_res)
+		win_assert(hr)
+	}
+
+	sampler: ^d3d11.ISamplerState
+	{
+		sampler_desc := d3d11.SAMPLER_DESC {
+			Filter = .MIN_MAG_MIP_POINT,
+			AddressU = .CLAMP,
+			AddressV = .CLAMP,
+			AddressW = .CLAMP,
+		}
+		hr := device->CreateSamplerState(&sampler_desc, &sampler)
+		win_assert(hr)
 	}
 
 	for !should_close
@@ -98,7 +282,19 @@ main :: proc() {
 		background_color := [4]f32 {1, 0, 1, 1}
 		device_context->OMSetRenderTargets(1, &render_target_view, nil)
 		device_context->ClearRenderTargetView(render_target_view, &background_color)
+		device_context->IASetPrimitiveTopology(.TRIANGLELIST)
+		device_context->IASetInputLayout(input_layout)
+		vertex_offset := u32(0)
+		vertex_stride := u32(size_of([4]f32))
+		device_context->IASetVertexBuffers(0, 1, &vertex_buffer, &vertex_stride, &vertex_offset)
+		device_context->IASetIndexBuffer(index_buffer, .R32_UINT, 0)
 
+		device_context->VSSetShader(vertex_shader, nil, 0)
+		device_context->PSSetShader(pixel_shader, nil, 0)
+		device_context->PSSetSamplers(0, 1, &sampler)
+		device_context->PSSetShaderResources(0, 1, &texture_res)
+
+		device_context->DrawIndexed(6, 0, 0)
 
 		swap_chain->Present(1, {})
 	}
@@ -114,4 +310,17 @@ window_proc :: proc "stdcall" (hwnd: windows.HWND, msg: windows.UINT, w_param: w
 		}
 	}
 	return windows.DefWindowProcW(hwnd, msg, w_param, l_param)
+}
+
+win_assert :: proc(#any_int hresult: int, location := #caller_location) -> bool {
+	if windows.SUCCEEDED(hresult) do return true
+	err := windows.System_Error(windows.GetLastError())
+	if err == .SUCCESS do err = windows.System_Error(hresult & 0xffff)
+	message := fmt.tprintf("WIN32 ERROR: %s", err)
+	windows.MessageBoxW(nil,
+		windows.utf8_to_wstring(message),
+		windows.utf8_to_wstring("ERROR"),
+		windows.MB_ICONERROR | windows.MB_OK,
+	)
+	return false
 }
