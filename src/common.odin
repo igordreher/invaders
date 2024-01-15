@@ -4,8 +4,9 @@ import ma "vendor:miniaudio"
 import "core:mem"
 import "core:fmt"
 
+Sound_Engine :: ma.engine
 
-init_sounds :: proc(engine: ^ma.engine) {
+init_sounds :: proc(engine: ^Sound_Engine) {
 	wavs := map[cstring][]byte {
 		"0" = #load("../sound/0.wav"),
 		"1" = #load("../sound/1.wav"),

@@ -7,7 +7,6 @@ import "core:mem"
 import "vendor:directx/dxgi"
 import "vendor:directx/d3d11"
 import "vendor:directx/d3d_compiler"
-import ma "vendor:miniaudio"
 
 
 WIDTH :: 224
@@ -279,7 +278,7 @@ main :: proc() {
 		device_context->PSSetShaderResources(0, 1, &texture_res)
 	}
 
-	sound_engine: ma.engine
+	sound_engine: Sound_Engine
 	init_sounds(&sound_engine)
 
 	rom := #load("../invaders_rom")
