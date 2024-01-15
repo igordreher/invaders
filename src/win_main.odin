@@ -16,6 +16,7 @@ SCALE :: 2
 
 should_close: bool
 
+
 main :: proc() {
 	when PROFILE do profile_init()
 	defer when PROFILE do profile_end()
@@ -278,65 +279,8 @@ main :: proc() {
 		device_context->PSSetShaderResources(0, 1, &texture_res)
 	}
 
-	{	// init audio stuff
-		wavs := map[cstring][]byte {
-			"0" = #load("../sound/0.wav"),
-			"1" = #load("../sound/1.wav"),
-			"2" = #load("../sound/2.wav"),
-			"3" = #load("../sound/3.wav"),
-			"4" = #load("../sound/4.wav"),
-			"5" = #load("../sound/5.wav"),
-			"6" = #load("../sound/6.wav"),
-			"7" = #load("../sound/7.wav"),
-			"8" = #load("../sound/8.wav"),
-		}
-
-		VFS :: struct {
-			using cb: ma.vfs_callbacks,
-			allocationCallbacks: ma.allocation_callbacks, // unused
-			wavs: map[cstring][]byte,
-		}
-		vfs: VFS
-		vfs.wavs = wavs
-		vfs.onOpen = proc "c" (pVFS: ^ma.vfs, pFilePath: cstring, openMode: u32, pFile: ^ma.vfs_file) -> ma.result
-		{
-			pFile^ = auto_cast &((^VFS)(pVFS).wavs[pFilePath])
-			return .SUCCESS
-		}
-		vfs.onClose = proc "c" (pVFS: ^ma.vfs, file: ma.vfs_file) -> ma.result
-		{
-			return .SUCCESS
-		}
-		vfs.onRead =  proc "c" (pVFS: ^ma.vfs, file: ma.vfs_file, pDst: rawptr, sizeInBytes: uint, pBytesRead: ^uint) -> ma.result
-		{
-			data := (^[]byte)(file)^
-			bytes_read := min(sizeInBytes, cast(uint)len(data))
-			pBytesRead^ = bytes_read
-			mem.copy(pDst, &data[0], cast(int)bytes_read)
-			return .SUCCESS
-		}
-		vfs.onInfo =  proc "c" (pVFS: ^ma.vfs, file: ma.vfs_file, pInfo: ^ma.file_info) -> ma.result
-		{
-			data := (^[]byte)(file)^
-			pInfo.sizeInBytes = auto_cast len(data)
-			return .SUCCESS
-		}
-
-		sound_engine: ma.engine
-		engine_config := ma.engine_config_init()
-		engine_config.pResourceManagerVFS = auto_cast &vfs
-		result := ma.engine_init(&engine_config, &sound_engine)
-		assert(result == .SUCCESS) // TODO
-		ma.engine_set_volume(&sound_engine, 0.1)
-
-		for _, i in sounds {
-			name := fmt.ctprintf("%d", i)
-			result := ma.sound_init_from_file(&sound_engine, name, 0, nil, nil, &sounds[i])
-			assert(result == .SUCCESS, fmt.tprintf("%s", result))
-		}
-		ma.sound_set_looping(&sounds[0], true) // ufo sound
-		free_all(context.temp_allocator)
-	}
+	sound_engine: ma.engine
+	init_sounds(&sound_engine)
 
 	rom := #load("../invaders_rom")
 	cpu := i8080_init(rom, port_in, port_out)
@@ -394,53 +338,6 @@ update_vram :: proc(vram: []byte, device_context: ^d3d11.IDeviceContext, texture
 	device_context->DrawIndexed(6, 0, 0)
 }
 
-shift0, shift1, shift_offset: u8
-port_in :: proc(state: ^i8080_State, port: u8) -> u8 {
-    switch(port)
-    {
-        case 3:
-        {
-            v := u16(shift1)<<8 | u16(shift0)
-            return u8((v >> (8-shift_offset)) & 0xff)
-        }
-		case: return state.ports[port]
-    }
-}
-
-sounds: [9]ma.sound
-port_out :: proc(state: ^i8080_State, port: u8, value: u8) {
-    switch(port)
-    {
-        case 2: shift_offset = value & 0x7
-        case 4:
-		{
-            shift0 = shift1
-            shift1 = value
-		}
-		case 3:
-		{
-			if !read_bit(value, 0) && read_bit(state.ports[port], 0) {
-				ma.sound_stop(&sounds[0])
-			}
-			for i in 0..<4 {
-				if read_bit(value, i) && !read_bit(state.ports[port], i) {
-					ma.sound_start(&sounds[i])
-				}
-			}
-			state.ports[port] = value
-		}
-		case 5:
-		{
-			for i in 0..<5 {
-				if read_bit(value, i) && !read_bit(state.ports[port], i) {
-					ma.sound_start(&sounds[i+4])
-				}
-			}
-			state.ports[port] = value
-		}
-		case: state.ports[port] = value
-    }
-}
 
 ports: []byte
 window_proc :: proc "stdcall" (hwnd: windows.HWND, msg: windows.UINT, w_param: windows.WPARAM, l_param: windows.LPARAM) -> windows.LRESULT
@@ -467,17 +364,6 @@ window_proc :: proc "stdcall" (hwnd: windows.HWND, msg: windows.UINT, w_param: w
 	return windows.DefWindowProcW(hwnd, msg, w_param, l_param)
 }
 
-toggle_bit :: proc "stdcall" (v: ^u8, bit: u8, state: bool) {
-	if state {
-		v^ |= 1 << bit
-	} else {
-		v^ &= 0xff ~ (1 << bit)
-	}
-}
-
-read_bit :: proc(v: u8, #any_int bit: u8) -> bool {
-	return (v & (1 << bit)) >> bit == 1
-}
 
 win_assert :: proc(#any_int hresult: int, location := #caller_location) -> bool {
 	if windows.SUCCEEDED(hresult) do return true
