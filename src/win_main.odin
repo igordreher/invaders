@@ -249,6 +249,43 @@ main :: proc() {
 		win_assert(hr)
 	}
 
+	screen_color_res: ^d3d11.IShaderResourceView
+	{
+		screen_color := [HEIGHT][4]u8{}
+		yellow := [4]u8{255, 255, 0, 255}
+		green := [4]u8{0, 255, 0, 255}
+		white := [4]u8{255, 255, 255, 255}
+		for _, i in screen_color {
+			if i > 207 && i < 236 {
+				screen_color[i] = yellow
+			} else if i > 27 && i < 72 {
+				screen_color[i] = green
+			} else {
+				screen_color[i] = white
+			}
+		}
+
+		tex_desc := d3d11.TEXTURE1D_DESC {
+			Width = HEIGHT,
+			MipLevels = 1, ArraySize = 1,
+			Format = .R8G8B8A8_UNORM,
+			Usage = .IMMUTABLE,
+			BindFlags = {.SHADER_RESOURCE},
+		}
+		init_data := d3d11.SUBRESOURCE_DATA{pSysMem=&screen_color[0]}
+		texture: ^d3d11.ITexture1D
+		hr := device->CreateTexture1D(&tex_desc, &init_data, &texture)
+		win_assert(hr)
+
+		res_desc := d3d11.SHADER_RESOURCE_VIEW_DESC {
+			Format = .R8G8B8A8_UNORM,
+			ViewDimension = .TEXTURE1D,
+			Texture2D = {MipLevels=1},
+		}
+		hr = device->CreateShaderResourceView(&texture.id3d11resource, &res_desc, &screen_color_res)
+		win_assert(hr)
+	}
+
 	sampler: ^d3d11.ISamplerState
 	{
 		sampler_desc := d3d11.SAMPLER_DESC {
@@ -276,6 +313,7 @@ main :: proc() {
 		device_context->PSSetShader(pixel_shader, nil, 0)
 		device_context->PSSetSamplers(0, 1, &sampler)
 		device_context->PSSetShaderResources(0, 1, &texture_res)
+		device_context->PSSetShaderResources(1, 1, &screen_color_res)
 	}
 
 	sound_engine: Sound_Engine
@@ -305,7 +343,7 @@ main :: proc() {
 			if cpu.interrupt_enabled && cpu.cycle_count > next_interrupt {
 				generate_interrupt(&cpu, which_interrupt)
 				next_interrupt += cycles_per_interrupt
-				which_interrupt = ((which_interrupt + 2) % 2) + 1
+				which_interrupt = (which_interrupt % 2) + 1
 				if which_interrupt == 1 do break
 			}
 		}

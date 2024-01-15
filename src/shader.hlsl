@@ -28,10 +28,14 @@ vs_out vs_main(vs_in input) {
 
 sampler Sampler : register(s0);
 Texture2D Texture : register(t0);
+Texture1D ScreenColor : register(t1);
+
 
 float4 ps_main(vs_out p) : SV_TARGET {
+	float2 tex = float2(p.uv) * float2(256, 224);
 	uint byte = Texture.Sample(Sampler, p.uv).r * 255;
-	uint pixel_index = (p.uv.x * 256) % 8;
+	uint pixel_index = (tex.x) % 8;
 	uint pixel = (byte & (1 << pixel_index)) >> pixel_index;
-	return float4(pixel, pixel, pixel, pixel);
+	float4 color = ScreenColor.Sample(Sampler, p.uv.x);
+	return color * pixel;
 }
