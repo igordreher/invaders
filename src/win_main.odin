@@ -4,10 +4,10 @@ package main
 import "core:fmt"
 import "core:sys/windows"
 import "core:mem"
-import "core:runtime"
 import "vendor:directx/dxgi"
 import "vendor:directx/d3d11"
 import "vendor:directx/d3d_compiler"
+import ma "vendor:miniaudio"
 
 
 WIDTH :: 224
@@ -278,6 +278,66 @@ main :: proc() {
 		device_context->PSSetShaderResources(0, 1, &texture_res)
 	}
 
+	{	// init audio stuff
+		wavs := map[cstring][]byte {
+			"0" = #load("../sound/0.wav"),
+			"1" = #load("../sound/1.wav"),
+			"2" = #load("../sound/2.wav"),
+			"3" = #load("../sound/3.wav"),
+			"4" = #load("../sound/4.wav"),
+			"5" = #load("../sound/5.wav"),
+			"6" = #load("../sound/6.wav"),
+			"7" = #load("../sound/7.wav"),
+			"8" = #load("../sound/8.wav"),
+		}
+
+		VFS :: struct {
+			using cb: ma.vfs_callbacks,
+			allocationCallbacks: ma.allocation_callbacks, // unused
+			wavs: map[cstring][]byte,
+		}
+		vfs: VFS
+		vfs.wavs = wavs
+		vfs.onOpen = proc "c" (pVFS: ^ma.vfs, pFilePath: cstring, openMode: u32, pFile: ^ma.vfs_file) -> ma.result
+		{
+			pFile^ = auto_cast &((^VFS)(pVFS).wavs[pFilePath])
+			return .SUCCESS
+		}
+		vfs.onClose = proc "c" (pVFS: ^ma.vfs, file: ma.vfs_file) -> ma.result
+		{
+			return .SUCCESS
+		}
+		vfs.onRead =  proc "c" (pVFS: ^ma.vfs, file: ma.vfs_file, pDst: rawptr, sizeInBytes: uint, pBytesRead: ^uint) -> ma.result
+		{
+			data := (^[]byte)(file)^
+			bytes_read := min(sizeInBytes, cast(uint)len(data))
+			pBytesRead^ = bytes_read
+			mem.copy(pDst, &data[0], cast(int)bytes_read)
+			return .SUCCESS
+		}
+		vfs.onInfo =  proc "c" (pVFS: ^ma.vfs, file: ma.vfs_file, pInfo: ^ma.file_info) -> ma.result
+		{
+			data := (^[]byte)(file)^
+			pInfo.sizeInBytes = auto_cast len(data)
+			return .SUCCESS
+		}
+
+		sound_engine: ma.engine
+		engine_config := ma.engine_config_init()
+		engine_config.pResourceManagerVFS = auto_cast &vfs
+		result := ma.engine_init(&engine_config, &sound_engine)
+		assert(result == .SUCCESS) // TODO
+		ma.engine_set_volume(&sound_engine, 0.1)
+
+		for _, i in sounds {
+			name := fmt.ctprintf("%d", i)
+			result := ma.sound_init_from_file(&sound_engine, name, 0, nil, nil, &sounds[i])
+			assert(result == .SUCCESS, fmt.tprintf("%s", result))
+		}
+		ma.sound_set_looping(&sounds[0], true) // ufo sound
+		free_all(context.temp_allocator)
+	}
+
 	rom := #load("../invaders_rom")
 	cpu := i8080_init(rom, port_in, port_out)
 	vram := cpu.memory[0x2400:0x4000]
@@ -289,7 +349,7 @@ main :: proc() {
 	next_interrupt := cycles_per_interrupt
 	which_interrupt: u16
 
-	for !should_close && cpu.regs.PC < auto_cast len(rom)
+	for !should_close
 	{
 		msg: windows.MSG
 		if windows.PeekMessageW(&msg, nil, 0, 0, windows.PM_REMOVE) {
@@ -347,6 +407,7 @@ port_in :: proc(state: ^i8080_State, port: u8) -> u8 {
     }
 }
 
+sounds: [9]ma.sound
 port_out :: proc(state: ^i8080_State, port: u8, value: u8) {
     switch(port)
     {
@@ -358,13 +419,24 @@ port_out :: proc(state: ^i8080_State, port: u8, value: u8) {
 		}
 		case 3:
 		{
+			if !read_bit(value, 0) && read_bit(state.ports[port], 0) {
+				ma.sound_stop(&sounds[0])
+			}
+			for i in 0..<4 {
+				if read_bit(value, i) && !read_bit(state.ports[port], i) {
+					ma.sound_start(&sounds[i])
+				}
+			}
 			state.ports[port] = value
-			// TODO: play audio
 		}
 		case 5:
 		{
+			for i in 0..<5 {
+				if read_bit(value, i) && !read_bit(state.ports[port], i) {
+					ma.sound_start(&sounds[i+4])
+				}
+			}
 			state.ports[port] = value
-			// TODO: play audio
 		}
 		case: state.ports[port] = value
     }
@@ -373,7 +445,6 @@ port_out :: proc(state: ^i8080_State, port: u8, value: u8) {
 ports: []byte
 window_proc :: proc "stdcall" (hwnd: windows.HWND, msg: windows.UINT, w_param: windows.WPARAM, l_param: windows.LPARAM) -> windows.LRESULT
 {
-	// context = runtime.default_context()
 	switch msg {
 		case windows.WM_CLOSE, windows.WM_QUIT, windows.WM_DESTROY:
 		{
@@ -402,6 +473,10 @@ toggle_bit :: proc "stdcall" (v: ^u8, bit: u8, state: bool) {
 	} else {
 		v^ &= 0xff ~ (1 << bit)
 	}
+}
+
+read_bit :: proc(v: u8, #any_int bit: u8) -> bool {
+	return (v & (1 << bit)) >> bit == 1
 }
 
 win_assert :: proc(#any_int hresult: int, location := #caller_location) -> bool {
