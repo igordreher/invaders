@@ -8,14 +8,16 @@ when PROFILE
 {
 	buf: spall.Buffer
 	ctx: spall.Context
+	@(private)
+	_buf_backing: []byte
 }
 
 profile_init :: proc() {
 when PROFILE
 {
 	ctx, _ = spall.context_create("prof.spall")
-	buf_backing := make([]byte, spall.BUFFER_DEFAULT_SIZE)
-	buf, _ = spall.buffer_create(buf_backing)
+	_buf_backing = make([]byte, spall.BUFFER_DEFAULT_SIZE)
+	buf, _ = spall.buffer_create(_buf_backing)
 }
 }
 profile_end :: proc() {
@@ -23,6 +25,7 @@ when PROFILE
 {
 	spall.buffer_destroy(&ctx, &buf)
 	spall.context_destroy(&ctx)
+	delete(_buf_backing)
 }
 }
 
