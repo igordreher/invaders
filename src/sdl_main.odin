@@ -85,10 +85,24 @@ main :: proc() {
 		gl.GenerateMipmap(gl.TEXTURE_2D)
 	}
 
+	screen_color_tex: u32
+	{
+		screen_colors := init_screen_colors()
+		gl.GenTextures(1, &screen_color_tex)
+		gl.BindTexture(gl.TEXTURE_1D, screen_color_tex)
+		gl.TexParameteri(gl.TEXTURE_1D, gl.TEXTURE_WRAP_S, gl.CLAMP)
+		gl.TexParameteri(gl.TEXTURE_1D, gl.TEXTURE_WRAP_T, gl.CLAMP)
+		gl.TexParameteri(gl.TEXTURE_1D, gl.TEXTURE_MIN_FILTER, gl.NEAREST)
+		gl.TexParameteri(gl.TEXTURE_1D, gl.TEXTURE_MAG_FILTER, gl.NEAREST)
+		gl.TexImage1D(gl.TEXTURE_1D, 0, gl.RGBA, HEIGHT, 0, gl.RGBA, gl.UNSIGNED_BYTE, &screen_colors)
+		gl.GenerateMipmap(gl.TEXTURE_1D)
+	}
+
 	{	// only need to set once
 		gl.UseProgram(shader)
 		gl.BindVertexArray(vao)
 		gl.BindTexture(gl.TEXTURE_2D, texture)
+		gl.BindTexture(gl.TEXTURE_1D, screen_color_tex)
 	}
 
 	which_interrupt: u16 = 1

@@ -251,20 +251,7 @@ main :: proc() {
 
 	screen_color_res: ^d3d11.IShaderResourceView
 	{
-		screen_color := [HEIGHT][4]u8{}
-		yellow := [4]u8{255, 255, 0, 255}
-		green := [4]u8{0, 255, 0, 255}
-		white := [4]u8{255, 255, 255, 255}
-		for _, i in screen_color {
-			if i > 207 && i < 236 {
-				screen_color[i] = yellow
-			} else if i > 27 && i < 72 {
-				screen_color[i] = green
-			} else {
-				screen_color[i] = white
-			}
-		}
-
+		screen_colors := init_screen_colors()
 		tex_desc := d3d11.TEXTURE1D_DESC {
 			Width = HEIGHT,
 			MipLevels = 1, ArraySize = 1,
@@ -272,7 +259,7 @@ main :: proc() {
 			Usage = .IMMUTABLE,
 			BindFlags = {.SHADER_RESOURCE},
 		}
-		init_data := d3d11.SUBRESOURCE_DATA{pSysMem=&screen_color[0]}
+		init_data := d3d11.SUBRESOURCE_DATA{pSysMem=&screen_colors[0]}
 		texture: ^d3d11.ITexture1D
 		hr := device->CreateTexture1D(&tex_desc, &init_data, &texture)
 		win_assert(hr)

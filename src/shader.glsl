@@ -24,12 +24,11 @@ in vec2 uv;
 out vec4 color;
 
 uniform sampler2D image;
+uniform sampler1D screen_color;
 
 void main() {
-	float byteF = texture(image, uv).r * 255;
-	int byte = int(byteF);
-	// int pixel_index = int(mod(uv.x * 256, 8));
+	int byte = int(texture(image, uv).r * 255);
 	int pixel_index = int(uv.x * 256) % 8;
 	int pixel = (byte & (1 << pixel_index)) >> pixel_index;
-	color = vec4(pixel, pixel, pixel, pixel);
+	color = texture(screen_color, uv.x) * pixel;
 }

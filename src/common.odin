@@ -125,3 +125,20 @@ toggle_bit :: proc "stdcall" (v: ^u8, bit: u8, state: bool) {
 read_bit :: proc(v: u8, #any_int bit: u8) -> bool {
 	return (v & (1 << bit)) >> bit == 1
 }
+
+init_screen_colors :: proc() -> [HEIGHT][4]u8 {
+	screen_color := [HEIGHT][4]u8{}
+	yellow := [4]u8{255, 255, 0, 255}
+	green := [4]u8{0, 255, 0, 255}
+	white := [4]u8{255, 255, 255, 255}
+	for _, i in screen_color {
+		if i > 207 && i < 236 {
+			screen_color[i] = yellow
+		} else if i > 27 && i < 72 {
+			screen_color[i] = green
+		} else {
+			screen_color[i] = white
+		}
+	}
+	return screen_color
+}
