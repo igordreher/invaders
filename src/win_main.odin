@@ -4,6 +4,8 @@ package main
 import "core:fmt"
 import "core:sys/windows"
 import "core:mem"
+import "core:os"
+import "core:strings"
 import "vendor:directx/dxgi"
 import "vendor:directx/d3d11"
 import "vendor:directx/d3d_compiler"
@@ -40,6 +42,7 @@ main :: proc() {
 		h_instance,
 		nil,
 	)
+	assert(hwnd != nil)
 	if hwnd == nil {
 		// TODO
 	}
@@ -377,11 +380,12 @@ window_proc :: proc "stdcall" (hwnd: windows.HWND, msg: windows.UINT, w_param: w
 			state := msg == windows.WM_KEYDOWN
 			switch w_param
 			{
-				case windows.VK_RETURN: toggle_bit(&ports[1], 0, state)
-				case windows.VK_LEFT, windows.VK_A: toggle_bit(&ports[1], 5, state)
-				case windows.VK_RIGHT, windows.VK_D: toggle_bit(&ports[1], 6, state)
-				case windows.VK_SPACE: toggle_bit(&ports[1], 4, state)
+				case windows.VK_RETURN, windows.VK_3: toggle_bit(&ports[1], 0, state)
+				case windows.VK_LEFT, windows.VK_A: toggle_bit(&ports[1], 5, state); toggle_bit(&ports[2], 5, state)
+				case windows.VK_RIGHT, windows.VK_D: toggle_bit(&ports[1], 6, state); toggle_bit(&ports[2], 6, state)
+				case windows.VK_SPACE: toggle_bit(&ports[1], 4, state); toggle_bit(&ports[2], 4, state)
 				case windows.VK_1: toggle_bit(&ports[1], 2, state)
+				case windows.VK_2: toggle_bit(&ports[1], 1, state)
 			}
 		}
 	}
