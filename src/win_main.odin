@@ -6,6 +6,7 @@ import "core:sys/windows"
 import "core:mem"
 import "core:os"
 import "core:strings"
+import "core:time"
 import "vendor:directx/dxgi"
 import "vendor:directx/d3d11"
 import "vendor:directx/d3d_compiler"
@@ -319,6 +320,7 @@ main :: proc() {
 	cycles_per_interrupt := cpu_speed / refresh_rate / 2
 	next_interrupt := cycles_per_interrupt
 	which_interrupt: u16
+	last_refresh := time.now()
 
 	for !should_close
 	{
@@ -341,8 +343,15 @@ main :: proc() {
 		{
 			profile_scope("render")
 			update_vram(vram, device_context, &texture.id3d11resource)
-			hr := swap_chain->Present(1, {})
+			hr := swap_chain->Present(0, {})
 			win_assert(hr)
+			time_spent := time.since(last_refresh)
+			ms_per_frame := 1000/refresh_rate * time.Millisecond
+			time_to_sleep := ms_per_frame - time_spent
+			if time_to_sleep > 0 {
+				time.sleep(time_to_sleep)
+			}
+			last_refresh = time.now()
 		}
 	}
 }
