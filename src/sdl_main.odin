@@ -76,9 +76,10 @@ main :: proc() {
 	texture: u32
 	{
 		gl.GenTextures(1, &texture)
+		gl.ActiveTexture(gl.TEXTURE0)
 		gl.BindTexture(gl.TEXTURE_2D, texture)
-		gl.TexParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP)
-		gl.TexParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP)
+		gl.TexParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.REPEAT)
+		gl.TexParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.REPEAT)
 		gl.TexParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST)
 		gl.TexParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST)
 		gl.TexImage2D(gl.TEXTURE_2D, 0, gl.RED, HEIGHT/8, WIDTH, 0, gl.RED, gl.UNSIGNED_BYTE, &vram[0])
@@ -88,10 +89,11 @@ main :: proc() {
 	screen_color_tex: u32
 	{
 		screen_colors := init_screen_colors()
+		gl.ActiveTexture(gl.TEXTURE1)
 		gl.GenTextures(1, &screen_color_tex)
 		gl.BindTexture(gl.TEXTURE_1D, screen_color_tex)
-		gl.TexParameteri(gl.TEXTURE_1D, gl.TEXTURE_WRAP_S, gl.CLAMP)
-		gl.TexParameteri(gl.TEXTURE_1D, gl.TEXTURE_WRAP_T, gl.CLAMP)
+		gl.TexParameteri(gl.TEXTURE_1D, gl.TEXTURE_WRAP_S, gl.REPEAT)
+		gl.TexParameteri(gl.TEXTURE_1D, gl.TEXTURE_WRAP_T, gl.REPEAT)
 		gl.TexParameteri(gl.TEXTURE_1D, gl.TEXTURE_MIN_FILTER, gl.NEAREST)
 		gl.TexParameteri(gl.TEXTURE_1D, gl.TEXTURE_MAG_FILTER, gl.NEAREST)
 		gl.TexImage1D(gl.TEXTURE_1D, 0, gl.RGBA, HEIGHT, 0, gl.RGBA, gl.UNSIGNED_BYTE, &screen_colors)
@@ -101,7 +103,9 @@ main :: proc() {
 	{	// only need to set once
 		gl.UseProgram(shader)
 		gl.BindVertexArray(vao)
-		gl.BindTexture(gl.TEXTURE_2D, texture)
+		gl.Uniform1i(gl.GetUniformLocation(shader, "image"), 0)
+		gl.Uniform1i(gl.GetUniformLocation(shader, "screen_color"), 1)
+		gl.ActiveTexture(gl.TEXTURE1)
 		gl.BindTexture(gl.TEXTURE_1D, screen_color_tex)
 	}
 
@@ -140,7 +144,10 @@ main :: proc() {
 			}
 		}
 
+		gl.ActiveTexture(gl.TEXTURE0)
+		gl.BindTexture(gl.TEXTURE_2D, texture)
 		gl.TexImage2D(gl.TEXTURE_2D, 0, gl.RED, HEIGHT/8, WIDTH, 0, gl.RED, gl.UNSIGNED_BYTE, &vram[0])
+
 		gl.DrawElements(gl.TRIANGLES, 6, gl.UNSIGNED_BYTE, nil)
 		sdl.GL_SwapWindow(window)
 	}
