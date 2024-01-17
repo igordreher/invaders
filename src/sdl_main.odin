@@ -129,6 +129,7 @@ main :: proc() {
 						case .RIGHT, .D:  toggle_bit(&cpu.ports[1], 6, state); toggle_bit(&cpu.ports[2], 6, state)
 						case .SPACE:  toggle_bit(&cpu.ports[1], 4, state); toggle_bit(&cpu.ports[2], 4, state)
 						case .NUM1:   toggle_bit(&cpu.ports[1], 2, state)
+						case .NUM2:   toggle_bit(&cpu.ports[1], 1, state)
 					}
 				}
 			}
