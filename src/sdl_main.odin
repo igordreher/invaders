@@ -5,6 +5,7 @@ import "core:fmt"
 import "core:os"
 import "core:strings"
 import "core:reflect"
+import "core:time"
 import sdl "vendor:sdl2"
 import gl "vendor:OpenGL"
 
@@ -40,7 +41,7 @@ main :: proc() {
 		os.exit(1)
 	}
 	gl.load_up_to(3, 3, sdl.gl_set_proc_address)
-	sdl.GL_SetSwapInterval(1)
+	sdl.GL_SetSwapInterval(0)
 
 	shader, ok := load_shader_single_file("shader.glsl")
 	assert(ok)
@@ -109,11 +110,13 @@ main :: proc() {
 		gl.BindTexture(gl.TEXTURE_1D, screen_color_tex)
 	}
 
-	which_interrupt: u16 = 1
+	which_interrupt: u16
 	cpu_speed := 2e+6
 	refresh_rate :: 60
 	cycles_per_interrupt := cpu_speed / refresh_rate / 2
 	next_interrupt := cycles_per_interrupt
+	last_refresh := time.now()
+
 	game_loop: for cpu.regs.PC < auto_cast len(rom) {
 		profile_scope("main_loop")
 		event: sdl.Event
@@ -151,6 +154,16 @@ main :: proc() {
 
 		gl.DrawElements(gl.TRIANGLES, 6, gl.UNSIGNED_BYTE, nil)
 		sdl.GL_SwapWindow(window)
+
+		{
+			time_spent := time.since(last_refresh)
+			ms_per_frame := 1000/refresh_rate * time.Millisecond
+			time_to_sleep := ms_per_frame - time_spent
+			if time_to_sleep > 0 {
+				time.sleep(time_to_sleep)
+			}
+			last_refresh = time.now()
+		}
 	}
 }
 
