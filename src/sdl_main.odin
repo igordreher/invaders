@@ -120,12 +120,11 @@ main :: proc() {
 				{
 					state := event.key.state == 1
 					#partial switch event.key.keysym.sym {
-						case .RETURN, .NUM_3: toggle_bit(&cpu.ports[1], 0, state)
+						case .RETURN, .NUM3: toggle_bit(&cpu.ports[1], 0, state)
 						case .LEFT, .A:   toggle_bit(&cpu.ports[1], 5, state); toggle_bit(&cpu.ports[2], 5, state)
 						case .RIGHT, .D:  toggle_bit(&cpu.ports[1], 6, state); toggle_bit(&cpu.ports[2], 6, state)
 						case .SPACE:  toggle_bit(&cpu.ports[1], 4, state); toggle_bit(&cpu.ports[2], 4, state)
 						case .NUM1:   toggle_bit(&cpu.ports[1], 2, state)
-						case .NUM3:   toggle_bit(&cpu.ports[1], 2, state)
 					}
 				}
 			}
