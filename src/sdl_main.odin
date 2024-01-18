@@ -111,9 +111,9 @@ main :: proc() {
 	}
 
 	which_interrupt: u16
-	cpu_speed := 2e+6
+	cpu_speed :: 2e+6
 	refresh_rate :: 60
-	cycles_per_interrupt := cpu_speed / refresh_rate / 2
+	cycles_per_interrupt :: cpu_speed / refresh_rate / 2
 	next_interrupt := cycles_per_interrupt
 	last_refresh := time.now()
 
@@ -160,7 +160,7 @@ main :: proc() {
 			ms_per_frame := 1000/refresh_rate * time.Millisecond
 			time_to_sleep := ms_per_frame - time_spent
 			if time_to_sleep > 0 {
-				time.sleep(time_to_sleep)
+				time.accurate_sleep(time_to_sleep)
 			}
 			last_refresh = time.now()
 		}
